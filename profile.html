@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GameZone — Profile</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .edit-panel{max-height:0;overflow:hidden;transition:max-height .38s cubic-bezier(.4,0,.2,1),opacity .3s ease;opacity:0}
+    .edit-panel.open{max-height:560px;opacity:1}
+    .edit-panel__inner{padding:20px;border-top:1px solid var(--border)}
+    /* Make profile avatar circular and align profile header like a sidebar (Telegram style) */
+    .profile-avatar-wrap{position:relative;width:64px;height:64px;margin:0}
+    .profile-avatar-img{width:64px;height:64px;border-radius:50%;object-fit:cover;display:block;border:3px solid var(--border)}
+    .profile-avatar-fallback{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#6C63FF);display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:#fff}
+    .ep-label{display:block;font-family:'Syne',sans-serif;font-size:11px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--text-3);margin-bottom:6px}
+    .ep-input{width:100%;background:var(--surface);border:1.5px solid var(--border);border-radius:13px;padding:11px 14px;font-family:'DM Sans',sans-serif;font-size:15px;color:var(--text);outline:none;transition:border-color .2s,box-shadow .2s}
+    .ep-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,59,87,.1);background:#fff}
+    .ep-input::placeholder{color:var(--text-3)}
+    .ep-drop{display:flex;align-items:center;gap:10px;background:var(--surface);border:1.5px dashed var(--border);border-radius:13px;padding:11px 14px;cursor:pointer;transition:border-color .2s,background .2s;font-size:14px;color:var(--text-2);font-weight:500}
+    .ep-drop:hover{border-color:var(--accent);background:var(--accent-soft)}
+    .ep-drop svg{flex-shrink:0;color:var(--text-3)}
+    .ep-preview{display:none;align-items:center;gap:10px;margin-top:8px;padding:8px 10px;background:var(--surface);border-radius:12px;border:1px solid var(--border)}
+    .ep-preview.show{display:flex}
+    .ep-preview img{width:40px;height:40px;border-radius:10px;object-fit:cover}
+    .ep-preview span{flex:1;font-size:12px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ep-preview-rm{width:24px;height:24px;border-radius:8px;background:var(--accent-soft);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;cursor:pointer;flex-shrink:0;border:none}
+    .ep-save{width:100%;background:var(--accent);color:#fff;font-family:'Syne',sans-serif;font-size:14px;font-weight:700;padding:13px;border-radius:14px;border:none;box-shadow:0 4px 16px rgba(255,59,87,.28);transition:background .18s,transform .15s;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer}
+    .ep-save:hover{background:#e02d49}
+    .ep-save:active{transform:scale(.97)}
+    .ep-save:disabled{background:var(--text-3);box-shadow:none;cursor:not-allowed}
+    .ep-spinner{width:16px;height:16px;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:none}
+    .ep-save.loading .ep-spinner{display:block}
+    .ep-save.loading .ep-btn-text{display:none}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .ep-status{font-size:13px;font-weight:600;text-align:center;padding:8px 12px;border-radius:10px;display:none;margin-top:12px}
+    .ep-status.ok{display:block;background:#d4f5ec;color:#00875a}
+    .ep-status.err{display:block;background:var(--accent-soft);color:var(--accent)}
+  .gz-setting-item.active-edit{background:var(--accent-soft)}
+    .gz-setting-item.active-edit .gz-setting-label{color:var(--accent)}
+    .edit-arrow{transition:transform .3s ease}
+    .active-edit .edit-arrow{transform:rotate(90deg)}
+    /* Align profile hero to look like a sidebar: avatar on the left, name on the right */
+    .gz-profile-hero { text-align: left; display: flex; align-items: center; gap: 14px; padding: 20px; }
+    .gz-profile-name { margin: 0; }
+    .gz-profile-sub { margin: 0; }
+  </style>
+</head>
+<body>
+
+  <header class="gz-header">
+    <div class="gz-header__row">
+      <div>
+        <p style="font-size:12px;color:var(--text-3);font-weight:500;margin-bottom:2px;">My Account</p>
+        <h1 class="gz-header__brand">Game<span>Zone</span></h1>
+      </div>
+      <div class="gz-header__actions">
+        <button class="gz-icon-btn" data-action="bell" aria-label="Notifications">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+        <!-- Profile header: avatar (left) and name/info (right) -->
+      <div class="gz-profile-hero">
+        <div class="profile-avatar-wrap">
+          <img id="profileAvatarImg" class="profile-avatar-img" src="" alt="avatar" style="display:none;"
+               onerror="this.style.display='none';document.getElementById('profileAvatarFallback').style.display='flex';" />
+          <div id="profileAvatarFallback" class="profile-avatar-fallback">G</div>
+        </div>
+        <div>
+          <p class="gz-profile-name" id="profileName">Loading…</p>
+          <p class="gz-profile-sub">GameZone Player</p>
+          <div style="margin-top:8px;">
+            <button id="deletePicBtn" onclick="deletePicture()"
+              style="display:none; padding:6px 14px; border-radius:10px;
+                     background:var(--accent-soft); color:var(--accent);
+                     font-family:'Syne',sans-serif; font-size:12px; font-weight:700;
+                     border:1.5px solid var(--accent); cursor:pointer; transition:background .18s;">
+              🗑️ Delete Picture
+            </button>
+          </div>
+        </div>
+      </div>
+
+    <!-- Settings -->
+    <div class="gz-settings-list" style="margin-bottom:16px;">
+
+      <!-- Edit Profile accordion -->
+      <div>
+        <div class="gz-setting-item" id="editToggle" style="cursor:pointer;">
+          <div class="gz-setting-icon" style="background:#FFF0F2;">✏️</div>
+          <span class="gz-setting-label">Edit Profile</span>
+          <svg class="gz-setting-arrow edit-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+
+        <div class="edit-panel" id="editPanel">
+          <div class="edit-panel__inner">
+
+            <div style="margin-bottom:14px;">
+              <label class="ep-label" for="epName">Display Name</label>
+              <input id="epName" class="ep-input" type="text" placeholder="Ismingizni kiriting…" maxlength="80" autocomplete="off" />
+            </div>
+
+            <div style="margin-bottom:16px;">
+              <label class="ep-label">Profile Image</label>
+              <label class="ep-drop" for="epImage">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span id="epFileText">Rasm tanlang (JPG, PNG, WEBP · 5 MB)</span>
+              </label>
+              <input type="file" id="epImage" accept=".jpg,.jpeg,.png,.webp,.gif" style="display:none;" />
+              <div class="ep-preview" id="epPreview">
+                <img id="epPreviewImg" src="" alt="" />
+                <span id="epPreviewName"></span>
+                <button type="button" class="ep-preview-rm" id="epRemove">✕</button>
+              </div>
+            </div>
+
+            <button class="ep-save" id="epSave">
+              <div class="ep-spinner"></div>
+              <span class="ep-btn-text">Saqlash</span>
+            </button>
+            <p class="ep-status" id="epStatus"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Notifications toggle -->
+      <div class="gz-setting-item" style="cursor:default;">
+        <div class="gz-setting-icon" style="background:#F0F0FF;">🔔</div>
+        <span class="gz-setting-label">Notifications</span>
+        <label class="gz-toggle" title="Bildirishnomalar">
+          <input type="checkbox" id="settingNotif" />
+          <span class="gz-toggle__track"></span>
+        </label>
+      </div>
+
+      <!-- Dark Mode toggle -->
+      <div class="gz-setting-item" style="cursor:default;">
+        <div class="gz-setting-icon" style="background:#F0FFF4;">🌙</div>
+        <span class="gz-setting-label">Dark Mode</span>
+        <label class="gz-toggle" title="Tungi rejim">
+          <input type="checkbox" id="settingDark" />
+          <span class="gz-toggle__track"></span>
+        </label>
+      </div>
+
+      <!-- Language select removed per request -->
+    </div>
+
+    <div class="gz-settings-list">
+      <div class="gz-setting-item" onclick="resetProfileData()">
+        <div class="gz-setting-icon" style="background:#FFF0F2;">🗑️</div>
+        <span class="gz-setting-label" style="color:var(--accent);">Reset All Data</span>
+        <svg class="gz-setting-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+    </div>
+
+    <p style="text-align:center;font-size:12px;color:var(--text-3);font-family:'Syne',sans-serif;font-weight:600;margin-top:12px;">
+      GameZone v2.0 · Built with ❤️
+    </p>
+  </main>
+
+  <nav class="gz-nav">
+    <a class="gz-nav__item" href="index.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Home
+    </a>
+    <a class="gz-nav__item" href="library.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+      Library
+    </a>
+    <a class="gz-nav__item" href="favorites.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      Favourites
+    </a>
+    <a class="gz-nav__item" href="profile.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      Profile
+    </a>
+  </nav>
+
+  <script src="app.js"></script>
+  <script>
+    'use strict';
+
+    const profileName      = document.getElementById('profileName');
+    const profileAvatarImg = document.getElementById('profileAvatarImg');
+    const avatarFallback   = document.getElementById('profileAvatarFallback');
+    const editToggle       = document.getElementById('editToggle');
+    const editPanel        = document.getElementById('editPanel');
+    const epName           = document.getElementById('epName');
+    const epImage          = document.getElementById('epImage');
+    const epFileText       = document.getElementById('epFileText');
+    const epPreview        = document.getElementById('epPreview');
+    const epPreviewImg     = document.getElementById('epPreviewImg');
+    const epPreviewName    = document.getElementById('epPreviewName');
+    const epRemove         = document.getElementById('epRemove');
+    const epSave           = document.getElementById('epSave');
+    const epStatus         = document.getElementById('epStatus');
+
+    function showStatus(msg, type) {
+      epStatus.textContent = msg;
+      epStatus.className   = 'ep-status ' + type;
+    }
+
+    function setAvatar(imageUrl, name) {
+      const hasImage = !!imageUrl;
+      if (hasImage) {
+        profileAvatarImg.src           = imageUrl + '?t=' + Date.now();
+        profileAvatarImg.style.display = 'block';
+        avatarFallback.style.display   = 'none';
+      } else {
+        profileAvatarImg.style.display = 'none';
+        avatarFallback.style.display   = 'flex';
+        avatarFallback.textContent     = (name || 'G').charAt(0).toUpperCase();
+      }
+      // Show/hide the Delete Picture button depending on whether an image exists
+      const delBtn = document.getElementById('deletePicBtn');
+      if (delBtn) delBtn.style.display = hasImage ? 'block' : 'none';
+    }
+
+    // ── Sahifa ochilganda faqat GET — hech narsa yozilmaydi ──
+    async function loadProfile() {
+      try {
+        const res  = await fetch('/api/profile');
+        if (!res.ok) return;
+        const data = await res.json();
+        profileName.textContent = data.name;
+        epName.value            = data.name;
+        setAvatar(data.image_url, data.name);
+      } catch {
+        profileName.textContent = 'GameZone User';
+      }
+    }
+
+    // Profile stats removed — no loadStats() function required.
+
+    // ── Edit panel ochish/yopish ──
+    editToggle.addEventListener('click', () => {
+      const open = editPanel.classList.toggle('open');
+      editToggle.classList.toggle('active-edit', open);
+      epStatus.className = 'ep-status';
+    });
+
+    // ── Rasm preview ──
+    epImage.addEventListener('change', () => {
+      const file = epImage.files[0];
+      if (!file) return;
+      epFileText.textContent = file.name;
+      const reader = new FileReader();
+      reader.onload = e => {
+        epPreviewImg.src          = e.target.result;
+        epPreviewName.textContent = file.name + ' (' + (file.size/1024).toFixed(1) + ' KB)';
+        epPreview.classList.add('show');
+      };
+      reader.readAsDataURL(file);
+    });
+
+    epRemove.addEventListener('click', () => {
+      epImage.value          = '';
+      epFileText.textContent = 'Rasm tanlang (JPG, PNG, WEBP · 5 MB)';
+      epPreview.classList.remove('show');
+    });
+
+    // ── YAGONA POST — faqat "Saqlash" bosilganda ──
+    epSave.addEventListener('click', async () => {
+      const name = epName.value.trim();
+      if (!name) {
+        showStatus('⚠️ Ism kiritilishi shart.', 'err');
+        epName.focus();
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('name', name);
+      if (epImage.files[0]) formData.append('image', epImage.files[0]);
+
+      epSave.classList.add('loading');
+      epSave.disabled = true;
+      epStatus.className = 'ep-status';
+
+      try {
+        const res  = await fetch('/api/profile', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showStatus('❌ ' + (data.error || 'Xato yuz berdi.'), 'err');
+          return;
+        }
+
+        profileName.textContent = data.name;
+        setAvatar(data.image_url, data.name);
+        epRemove.click();
+        showStatus('✅ Profil muvaffaqiyatli saqlandi!', 'ok');
+        showToast('✅ Profil saqlandi!');
+
+      } catch {
+        showStatus("❌ Tarmoq xatosi. Qayta urinib ko'ring.", 'err');
+      } finally {
+        epSave.classList.remove('loading');
+        epSave.disabled = false;
+      }
+    });
+
+    // ── Delete Profile Picture (only avatar) ──
+    // This will remove the avatar on the server but will NOT clear likes/comments/settings.
+    async function deletePicture() {
+      if (!confirm('Remove your profile picture?')) return;
+      try {
+        const res = await fetch('/api/profile/image', { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Server error');
+        // Only update avatar in the UI — do NOT clear localStorage keys.
+        setAvatar(null, profileName.textContent);
+        showToast('🗑️ Profile picture removed');
+      } catch (e) {
+        showToast('❌ Could not remove avatar: ' + e.message);
+      }
+    }
+
+    // ── Reset game data only (likes/comments) — NOT profile, NOT settings ──
+    function clearData() {
+      const confirmed = clearGameData();    // defined in app.js (surgical localStorage)
+      // Stats UI removed from profile, nothing to refresh here.
+      if (confirmed) {
+        /* no-op */
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      loadProfile();   // GET — faqat o'qish, hech narsa yozilmaydi
+
+
+  // ── Sozlamalar UI ni yuklash ─────────────────────────────
+  // localStorage dan mavjud qiymatlarni olib, controllarni to'ldirish
+  const notifEl = document.getElementById('settingNotif');
+  const darkEl  = document.getElementById('settingDark');
+
+  notifEl.checked = Settings.get('notifications');  // default: true
+  darkEl.checked  = Settings.get('darkMode');        // default: false
+
+      // ── Notifications toggle ─────────────────────────────────
+      // O'zgarganda darhol localStorage ga yoziladi
+      notifEl.addEventListener('change', () => {
+        Settings.set('notifications', notifEl.checked);
+        showToast(notifEl.checked ? '🔔 Bildirishnomalar yoqildi' : '🔕 Bildirishnomalar o\'chirildi');
+      });
+
+      // ── Dark Mode toggle ─────────────────────────────────────
+      // O'zgarganda CSS class qo'shiladi/olib tashlanadi va saqlanadi
+      darkEl.addEventListener('change', () => {
+        Settings.set('darkMode', darkEl.checked);
+        applyDarkMode(darkEl.checked);
+        showToast(darkEl.checked ? '🌙 Tungi rejim yoqildi' : '☀️ Kunduzgi rejim yoqildi');
+      });
+
+      // Language selector removed from HTML; language is handled globally.
+    });
+  </script>
+</body>
+</html>

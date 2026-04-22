@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GameZone — Library</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ── HEADER ─────────────────────────────────── -->
+  <header class="gz-header">
+    <div class="gz-header__row">
+      <div>
+        <p style="font-size:12px;color:var(--text-3);font-weight:500;margin-bottom:2px;">Explore</p>
+        <h1 class="gz-header__brand">Game<span>Zone</span></h1>
+      </div>
+      <div class="gz-header__actions">
+        <button class="gz-icon-btn" data-action="bell" aria-label="Notifications">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Search bar -->
+    <div class="gz-search" style="max-width:640px;margin:0 auto 12px;">
+      <span class="gz-search__icon">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </span>
+      <input id="searchInput" class="gz-search__input" type="search"
+             placeholder="Search games…" autocomplete="off" />
+      <button id="clearBtn" class="gz-search__clear" aria-label="Clear">✕</button>
+    </div>
+
+    <!--
+      Category pills — hardcode yo'q!
+      renderPills() funksiyasi /api/categories dan dinamik to'ldiradi.
+    -->
+    <div class="gz-pills" id="pillsRow">
+      <!-- JS tomonidan to'ldiriladi -->
+      <button class="gz-pill active" data-cat="all">All</button>
+    </div>
+  </header>
+
+  <!-- ── MAIN ───────────────────────────────────── -->
+  <main class="gz-page">
+    <div class="gz-section-hd">
+      <h2 id="sectionTitle">All Games</h2>
+      <span id="gameCount"></span>
+    </div>
+
+    <!-- Skeleton loader — ma'lumot kelgunga qadar ko'rinadi -->
+    <div id="loadingSkeleton" class="gz-grid">
+      <div class="gz-card" style="min-height:220px;background:var(--border);border-radius:20px;animation:pulse 1.5s infinite;"></div>
+      <div class="gz-card" style="min-height:220px;background:var(--border);border-radius:20px;animation:pulse 1.5s infinite .15s;"></div>
+      <div class="gz-card" style="min-height:220px;background:var(--border);border-radius:20px;animation:pulse 1.5s infinite .3s;"></div>
+      <div class="gz-card" style="min-height:220px;background:var(--border);border-radius:20px;animation:pulse 1.5s infinite .45s;"></div>
+    </div>
+    <style>@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}</style>
+
+    <div class="gz-grid" id="gamesGrid" style="display:none;"></div>
+
+    <div class="gz-empty" id="emptyState" style="display:none;">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="8"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <h3>No games found</h3>
+      <p id="emptyMsg">Try a different search term or category</p>
+    </div>
+  </main>
+
+  <!-- ── BOTTOM NAV ────────────────────────────── -->
+  <nav class="gz-nav">
+    <a class="gz-nav__item" href="index.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Home
+    </a>
+    <a class="gz-nav__item" href="library.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+      Library
+    </a>
+    <a class="gz-nav__item" href="favorites.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      Favourites
+    </a>
+    <a class="gz-nav__item" href="profile.html">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      Profile
+    </a>
+  </nav>
+
+  <script src="app.js"></script>
+  <script>
+  'use strict';
+
+  // ─── Holat ────────────────────────────────────────────────
+  let activeCategory = 'all';   // 'all' yoki category nomi (string)
+  let searchQuery    = '';
+
+  // ─── Skeleton boshqaruv ───────────────────────────────────
+  function showSkeleton()  {
+    document.getElementById('loadingSkeleton').style.display = '';
+    document.getElementById('gamesGrid').style.display       = 'none';
+    document.getElementById('emptyState').style.display      = 'none';
+  }
+  function hideSkeleton()  {
+    document.getElementById('loadingSkeleton').style.display = 'none';
+    document.getElementById('gamesGrid').style.display       = '';
+  }
+
+  // ─── TASK 1: Dinamik kategoriya pillari ───────────────────
+  // Hardcode yo'q — GameStore.categories dan to'ldiriladi.
+  function renderPills() {
+    const row = document.getElementById('pillsRow');
+
+    // "All" tugmasini saqlab, qolganlarini tozalaymiz
+    row.querySelectorAll('.gz-pill[data-cat]:not([data-cat="all"])').forEach(p => p.remove());
+
+    GameStore.categories.forEach(cat => {
+      const btn = document.createElement('button');
+      btn.className   = 'gz-pill' + (activeCategory === cat.name ? ' active' : '');
+      btn.dataset.cat = cat.name;      // ← hardcode emas, DB dan
+      btn.textContent = cat.name;
+      row.appendChild(btn);
+    });
+
+    // "All" pill holatini sinxronlash
+    const allPill = row.querySelector('[data-cat="all"]');
+    if (allPill) allPill.classList.toggle('active', activeCategory === 'all');
+  }
+
+  // ─── TASK 1: Asosiy render funksiyasi ────────────────────
+  // GameStore.getSorted() ishlatadi — HARDCODE YO'Q.
+  function renderLibrary() {
+    const grid   = document.getElementById('gamesGrid');
+    const empty  = document.getElementById('emptyState');
+    const title  = document.getElementById('sectionTitle');
+    const count  = document.getElementById('gameCount');
+    const emptyMsg = document.getElementById('emptyMsg');
+
+    // Filtrlash: kategoriya nomi (case-insensitive) + qidiruv matni
+    const filtered = GameStore.getSorted().filter(g => {
+      const catOk = activeCategory === 'all' ||
+        (g.category_name || '').toLowerCase() === activeCategory.toLowerCase();
+      const searchOk = g.title.toLowerCase().includes(searchQuery.toLowerCase());
+      return catOk && searchOk;
+    });
+
+    // Section sarlavhasini yangilash
+    title.textContent = searchQuery
+      ? `Results for "${searchQuery}"`
+      : activeCategory === 'all' ? 'All Games' : activeCategory;
+
+    count.textContent = `${filtered.length} game${filtered.length !== 1 ? 's' : ''}`;
+
+    // Kartalarni tozalash va qayta chizish
+    grid.querySelectorAll('.gz-card').forEach(c => c.remove());
+
+    if (!filtered.length) {
+      emptyMsg.textContent = searchQuery
+        ? 'Try a different search term'
+        : GameStore.games.length
+          ? 'No games in this category yet'
+          : 'No games added yet. Check the admin panel.';
+      empty.style.display = 'flex';
+      return;
+    }
+
+    empty.style.display = 'none';
+    // Ensure library listing is sorted by current like counts (desc)
+    filtered.sort((a, b) => (State.getLikeCount(b) - State.getLikeCount(a)));
+    // Use a library-specific card builder so other pages (favorites/profile/index)
+    // keep the original `buildCard()` behavior untouched.
+    filtered.forEach(g => grid.appendChild(buildLibraryCard(g)));
+  }
+
+  // ─── Library-specific card with interactive 5-star rating (stored in localStorage)
+  const LS_RATINGS = 'gz_ratings';
+
+  function getSavedRatings() {
+    try { return JSON.parse(localStorage.getItem(LS_RATINGS) || '{}'); } catch { return {}; }
+  }
+  function saveRatings(obj) { localStorage.setItem(LS_RATINGS, JSON.stringify(obj)); }
+
+  function getRatingFor(id) {
+    const all = getSavedRatings();
+    return all[id] !== undefined ? Number(all[id]) : (GameStore.getById(id)?.rating || 0);
+  }
+  function setRatingFor(id, value) {
+    const all = getSavedRatings(); all[id] = value; saveRatings(all);
+  }
+
+  function starSVG(filled) {
+    return filled
+      ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="#FFB800" stroke="#FFB800" stroke-width="0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`
+      : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#cfcfcf" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+  }
+
+  function buildLibraryCard(game) {
+    // Build a card similar to buildCard() but with a rating widget.
+    const liked  = State.likedSet.has(game.id);
+    const cCount = State.getComments(game).length;
+    const curRating = getRatingFor(game.id) || 0;
+
+    const div = document.createElement('div');
+    div.className  = 'gz-card';
+    div.dataset.id = game.id;
+    div.style.cursor = (game.game_url && game.game_url !== '#') ? 'pointer' : 'default';
+
+    div.innerHTML = `
+      <div class="gz-card__img-wrap">
+        <img class="gz-card__img" src="${game.img || PLACEHOLDER_IMG}"
+             alt="${game.title}" loading="lazy"
+             onerror="this.src='${PLACEHOLDER_IMG}'" />
+        ${badgeHTML(game.badge)}
+        ${game.rating ? `
+        <span class="gz-card__rating">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="#FFB800">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+          </svg>
+          ${game.rating}
+        </span>` : ''}
+      </div>
+      <div class="gz-card__body">
+        <!-- meta (genre / players) removed per user request -->
+        <p class="gz-card__title">${game.title}</p>
+
+        <!-- Interactive 5-star rating (library only) -->
+        <div class="gz-rating" data-id="${game.id}" aria-label="Rate ${game.title}">
+          ${[1,2,3,4,5].map(i => `
+            <button class="gz-rating__star" data-star="${i}" aria-label="${i} star" type="button">${starSVG(i <= curRating)}</button>
+          `).join('')}
+        </div>
+
+        <div class="gz-card__footer">
+          <button class="gz-like-btn ${liked ? 'liked' : ''}"
+                  data-action="like" data-id="${game.id}" aria-label="Like">
+            ${heartSVG(liked)}
+            <span class="like-count">${formatEngagementNumbers(State.getLikeCount(game))}</span>
+          </button>
+          <button class="gz-comment-btn"
+                  data-action="comment" data-id="${game.id}" aria-label="Comments">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            ${formatEngagementNumbers(cCount)}
+          </button>
+        </div>
+      </div>
+    `;
+
+    // Like / comment handlers reuse existing functions
+    div.querySelector('[data-action="like"]').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleLike(game.id, div);
+    });
+    div.querySelector('[data-action="comment"]').addEventListener('click', e => {
+      e.stopPropagation();
+      openModal(game.id);
+    });
+
+    // Rating handlers (library-only). Update storage + UI for this card.
+    const stars = Array.from(div.querySelectorAll('.gz-rating__star'));
+    stars.forEach(s => {
+      const val = Number(s.dataset.star);
+      // Click sets rating
+      s.addEventListener('click', e => {
+        e.stopPropagation();
+        setRatingFor(game.id, val);
+        // Update stars visuals for this card only
+        stars.forEach(st => st.innerHTML = starSVG(Number(st.dataset.star) <= val));
+      });
+      // Optional hover preview
+      s.addEventListener('mouseenter', () => {
+        stars.forEach(st => st.innerHTML = starSVG(Number(st.dataset.star) <= val));
+      });
+      div.addEventListener('mouseleave', () => {
+        const cur = getRatingFor(game.id) || 0;
+        stars.forEach(st => st.innerHTML = starSVG(Number(st.dataset.star) <= cur));
+      });
+    });
+
+    // Card click opens game inside overlay iframe (so user doesn't leave the site)
+    div.addEventListener('click', () => {
+      const url = game.game_url && game.game_url !== '#'
+        ? game.game_url
+        : null;
+      if (url) openGameOverlay(url, game.title);
+    });
+
+    return div;
+  }
+
+  // ─── fetchData + render (bitta qadam) ────────────────────
+  async function loadAll() {
+    showSkeleton();
+    await fetchData();
+    hideSkeleton();
+    renderPills();
+    renderLibrary();
+  }
+
+  // ─── TASK 4: Cross-tab sinxronizatsiya ───────────────────
+  // Admin panel o'yin/kategoriya o'chirsa/qo'shsa,
+  // bu sahifa sahifani yangilamasdan avtomatik yangilanadi.
+  SyncBus.onUpdate(async () => {
+    await fetchData();
+    renderPills();
+    renderLibrary();
+    showToast('🔄 Library updated');
+  });
+
+  // ─── DOMContentLoaded ────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    loadAll();
+
+    // Qidiruv
+    const input    = document.getElementById('searchInput');
+    const clearBtn = document.getElementById('clearBtn');
+
+    input.addEventListener('input', () => {
+      searchQuery = input.value.trim();
+      clearBtn.classList.toggle('visible', !!searchQuery);
+      renderLibrary();
+    });
+    clearBtn.addEventListener('click', () => {
+      input.value = ''; searchQuery = '';
+      clearBtn.classList.remove('visible');
+      input.focus();
+      renderLibrary();
+    });
+
+    // Kategoriya pillari — event delegation orqali
+    document.getElementById('pillsRow').addEventListener('click', e => {
+      const pill = e.target.closest('.gz-pill');
+      if (!pill) return;
+      document.querySelectorAll('.gz-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      activeCategory = pill.dataset.cat;
+      renderLibrary();
+    });
+  });
+  </script>
+</body>
+</html>

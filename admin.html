@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GameZone Admin Panel</title>
+  <style>
+    /* ══ Reset & Vars ══════════════════════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0f0f16;
+      --surface:  #161622;
+      --card:     #1c1c2e;
+      --border:   #2a2a42;
+      --text:     #e8e8f4;
+      --text-2:   #9090b0;
+      --text-3:   #55556e;
+      --accent:   #FF3B57;
+      --accent-h: #e02d49;
+      --green:    #00c896;
+      --orange:   #ff8c00;
+      --blue:     #6c8eff;
+      --radius:   12px;
+    }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    button { font-family: inherit; cursor: pointer; }
+    input, select, textarea { font-family: inherit; }
+    a { color: inherit; text-decoration: none; }
+
+    /* ══ Scrollbar ════════════════════════════════════ */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+    /* ══ LOGIN SCREEN ══════════════════════════════════ */
+    #loginScreen {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at 50% 0%, rgba(255,59,87,.12) 0%, transparent 60%), var(--bg);
+    }
+    .login-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 20px; padding: 48px 40px;
+      width: 100%; max-width: 400px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    .login-logo {
+      font-size: 28px; font-weight: 800; letter-spacing: -1px; margin-bottom: 6px;
+    }
+    .login-logo span { color: var(--accent); }
+    .login-sub   { font-size: 13px; color: var(--text-2); margin-bottom: 32px; }
+    .login-label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--text-2); margin-bottom: 7px; }
+    .login-input {
+      width: 100%; background: var(--card); border: 1.5px solid var(--border);
+      border-radius: 10px; padding: 12px 16px; font-size: 15px; color: var(--text);
+      outline: none; transition: border-color .2s;
+    }
+    .login-input:focus { border-color: var(--accent); }
+    .login-btn {
+      width: 100%; margin-top: 20px; padding: 13px; border-radius: 10px; border: none;
+      background: var(--accent); color: #fff; font-size: 15px; font-weight: 700;
+      transition: background .18s, transform .15s;
+    }
+    .login-btn:hover { background: var(--accent-h); }
+    .login-btn:active { transform: scale(.97); }
+    .login-error { color: var(--accent); font-size: 13px; margin-top: 12px; text-align: center; min-height: 20px; }
+
+    /* ══ ADMIN APP LAYOUT ══════════════════════════════ */
+    #adminApp { display: none; height: 100vh; overflow: hidden; }
+    .admin-layout { display: flex; height: 100vh; }
+
+    /* Sidebar */
+    .sidebar {
+      width: 230px; flex-shrink: 0;
+      background: var(--surface); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; padding: 24px 16px;
+      overflow-y: auto;
+    }
+    .sidebar-brand { font-size: 20px; font-weight: 800; padding: 0 8px; margin-bottom: 4px; }
+    .sidebar-brand span { color: var(--accent); }
+    .sidebar-sub { font-size: 11px; color: var(--text-3); padding: 0 8px; margin-bottom: 28px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
+    .sidebar-section { font-size: 10px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--text-3); padding: 0 8px; margin-bottom: 8px; margin-top: 20px; }
+
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; border-radius: 10px;
+      font-size: 14px; font-weight: 600; color: var(--text-2);
+      transition: background .15s, color .15s;
+      cursor: pointer; border: none; background: none; width: 100%; text-align: left;
+    }
+    .nav-item:hover { background: var(--card); color: var(--text); }
+    .nav-item.active { background: rgba(255,59,87,.12); color: var(--accent); }
+    .nav-item svg { flex-shrink: 0; }
+
+    .sidebar-logout {
+      margin-top: auto; padding: 10px 12px; border-radius: 10px;
+      font-size: 14px; font-weight: 600; color: var(--text-3);
+      transition: background .15s, color .15s; cursor: pointer;
+      border: none; background: none; width: 100%; text-align: left;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .sidebar-logout:hover { background: rgba(255,59,87,.08); color: var(--accent); }
+
+    /* Main content area */
+    .main-content { flex: 1; overflow-y: auto; padding: 32px; }
+    .content-section { display: none; }
+    .content-section.active { display: block; }
+
+    /* Page title */
+    .page-title { font-size: 22px; font-weight: 800; margin-bottom: 6px; }
+    .page-sub   { font-size: 13px; color: var(--text-2); margin-bottom: 28px; }
+
+    /* ══ STAT CARDS ════════════════════════════════════ */
+    .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }
+    .stat-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px;
+    }
+    .stat-card__icon { font-size: 28px; margin-bottom: 10px; }
+    .stat-card__val  { font-size: 28px; font-weight: 800; margin-bottom: 2px; }
+    .stat-card__lbl  { font-size: 12px; color: var(--text-2); font-weight: 600; }
+
+    /* ══ CARD PANEL ════════════════════════════════════ */
+    .panel {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); overflow: hidden; margin-bottom: 24px;
+    }
+    .panel-head {
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .panel-head h3 { font-size: 15px; font-weight: 700; }
+    .panel-body { padding: 20px; }
+
+    /* ══ FORMS ═════════════════════════════════════════ */
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .form-row.single { grid-template-columns: 1fr; }
+    .form-group { margin-bottom: 16px; }
+    .form-label {
+      display: block; font-size: 11px; font-weight: 700; letter-spacing: .6px;
+      text-transform: uppercase; color: var(--text-2); margin-bottom: 6px;
+    }
+    .form-input, .form-select {
+      width: 100%; background: var(--surface); border: 1.5px solid var(--border);
+      border-radius: 9px; padding: 10px 13px; font-size: 14px; color: var(--text);
+      outline: none; transition: border-color .2s;
+    }
+    .form-input:focus, .form-select:focus { border-color: var(--accent); }
+    .form-input::placeholder { color: var(--text-3); }
+
+    /* File upload drop zone */
+    .file-zone {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--surface); border: 1.5px dashed var(--border);
+      border-radius: 9px; padding: 10px 13px; cursor: pointer;
+      transition: border-color .2s, background .2s;
+      font-size: 13px; color: var(--text-2);
+    }
+    .file-zone:hover { border-color: var(--accent); background: rgba(255,59,87,.04); }
+    .file-zone input { display: none; }
+
+    /* Checkbox toggle */
+    .toggle-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 0;
+    }
+    .toggle-row label { font-size: 14px; font-weight: 600; cursor: pointer; flex: 1; }
+    .toggle-row small { font-size: 12px; color: var(--text-3); }
+    .adm-toggle {
+      position: relative; width: 44px; height: 26px; flex-shrink: 0; cursor: pointer;
+    }
+    .adm-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .adm-toggle__track {
+      position: absolute; inset: 0; background: var(--border); border-radius: 999px;
+      transition: background .22s;
+    }
+    .adm-toggle__track::after {
+      content: ''; position: absolute; top: 3px; left: 3px;
+      width: 20px; height: 20px; border-radius: 50%; background: #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,.3);
+      transition: transform .22s cubic-bezier(.34,1.4,.64,1);
+    }
+    .adm-toggle input:checked + .adm-toggle__track          { background: var(--accent); }
+    .adm-toggle input:checked + .adm-toggle__track::after   { transform: translateX(18px); }
+
+    /* ══ BUTTONS ════════════════════════════════════════ */
+    .btn {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 9px 18px; border-radius: 9px; border: none;
+      font-size: 13px; font-weight: 700; transition: background .18s, transform .15s;
+      cursor: pointer;
+    }
+    .btn:active { transform: scale(.96); }
+    .btn-primary  { background: var(--accent); color: #fff; }
+    .btn-primary:hover  { background: var(--accent-h); }
+    .btn-success  { background: var(--green); color: #000; }
+    .btn-danger   { background: rgba(255,59,87,.15); color: var(--accent); }
+    .btn-danger:hover   { background: var(--accent); color: #fff; }
+    .btn-ghost    { background: var(--surface); color: var(--text-2); border: 1px solid var(--border); }
+    .btn-ghost:hover    { border-color: var(--text-2); color: var(--text); }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+    /* ══ TABLES ════════════════════════════════════════ */
+    .adm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .adm-table th {
+      text-align: left; padding: 10px 14px; font-size: 11px; font-weight: 700;
+      letter-spacing: .6px; text-transform: uppercase; color: var(--text-3);
+      border-bottom: 1px solid var(--border);
+    }
+    .adm-table td {
+      padding: 12px 14px; border-bottom: 1px solid rgba(42,42,66,.5);
+      vertical-align: middle;
+    }
+    .adm-table tr:last-child td { border-bottom: none; }
+    .adm-table tr:hover td { background: rgba(255,255,255,.02); }
+
+    .tbl-thumb {
+      width: 40px; height: 40px; border-radius: 8px;
+      object-fit: cover; display: block;
+      background: var(--surface);
+    }
+    .tbl-thumb-placeholder {
+      width: 40px; height: 40px; border-radius: 8px;
+      background: var(--surface); display: flex; align-items: center;
+      justify-content: center; font-size: 18px; color: var(--text-3);
+    }
+
+    .badge {
+      display: inline-flex; align-items: center;
+      padding: 3px 10px; border-radius: 999px;
+      font-size: 11px; font-weight: 700;
+    }
+    .badge-featured { background: rgba(255,140,0,.15); color: var(--orange); }
+    .badge-normal   { background: var(--surface); color: var(--text-3); }
+
+    /* ══ INLINE FEATURE TOGGLE ══════════════════════════ */
+    .feat-toggle {
+      position: relative; width: 36px; height: 20px; cursor: pointer;
+    }
+    .feat-toggle input { opacity:0; position:absolute; }
+    .feat-toggle__t {
+      position:absolute; inset:0; background: var(--border); border-radius:999px;
+      transition: background .2s;
+    }
+    .feat-toggle__t::after {
+      content:''; position:absolute; top:2px; left:2px;
+      width:16px; height:16px; border-radius:50%; background:#fff;
+      box-shadow:0 1px 3px rgba(0,0,0,.3);
+      transition: transform .2s;
+    }
+    .feat-toggle input:checked + .feat-toggle__t          { background: var(--orange); }
+    .feat-toggle input:checked + .feat-toggle__t::after   { transform: translateX(16px); }
+
+    /* ══ EMPTY STATE ════════════════════════════════════ */
+    .adm-empty { text-align:center; padding:40px 20px; color:var(--text-3); font-size:14px; }
+    .adm-empty svg { margin:0 auto 12px; display:block; opacity:.3; }
+
+    /* ══ TOAST ══════════════════════════════════════════ */
+    #adminToast {
+      position:fixed; bottom:24px; left:50%;
+      transform: translateX(-50%) translateY(20px);
+      background: var(--text); color: var(--bg);
+      font-size:13px; font-weight:700; padding:11px 22px;
+      border-radius:12px; white-space:nowrap;
+      box-shadow:0 8px 28px rgba(0,0,0,.4);
+      opacity:0; pointer-events:none; z-index:9999;
+      transition: opacity .25s, transform .3s cubic-bezier(.34,1.4,.64,1);
+    }
+    #adminToast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+    #adminToast.ok  { background: var(--green); color:#000; }
+    #adminToast.err { background: var(--accent); color:#fff; }
+
+    /* ══ LOADING SPINNER ════════════════════════════════ */
+    .spinner {
+      width:16px; height:16px; border:2.5px solid rgba(255,255,255,.3);
+      border-top-color:#fff; border-radius:50%;
+      animation: spin .7s linear infinite; display:inline-block;
+    }
+    @keyframes spin { to { transform:rotate(360deg); } }
+
+    /* ══ RESPONSIVE ═════════════════════════════════════ */
+    @media (max-width: 768px) {
+      .sidebar   { width: 60px; }
+      .sidebar-brand, .sidebar-sub, .sidebar-section,
+      .nav-item span, .sidebar-logout span { display: none; }
+      .nav-item, .sidebar-logout { justify-content: center; padding: 12px; }
+      .main-content { padding: 20px 16px; }
+      .stats-row { grid-template-columns: repeat(2, 1fr); }
+      .form-row  { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══ LOGIN SCREEN ══════════════════════════════════════ -->
+<div id="loginScreen">
+  <div class="login-card">
+    <div class="login-logo">Game<span>Zone</span></div>
+    <p class="login-sub">ADMIN PANEL · Restricted Access</p>
+    <label class="login-label" for="loginPass">Admin Password</label>
+    <input id="loginPass" class="login-input" type="password"
+           placeholder="Enter admin password…" autocomplete="current-password" />
+    <button id="loginBtn" class="login-btn">Sign In</button>
+    <p id="loginError" class="login-error"></p>
+  </div>
+</div>
+
+<!-- ══ ADMIN APP ══════════════════════════════════════════ -->
+<div id="adminApp">
+  <div class="admin-layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">Game<span>Zone</span></div>
+      <div class="sidebar-sub">Admin Panel</div>
+
+      <div class="sidebar-section">Navigation</div>
+      <button class="nav-item active" data-sec="dashboard">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        <span>Dashboard</span>
+      </button>
+      <button class="nav-item" data-sec="categories">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+        <span>Categories</span>
+      </button>
+      <button class="nav-item" data-sec="games">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+        <span>Games</span>
+      </button>
+
+      <button class="sidebar-logout" id="logoutBtn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span>Logout</span>
+      </button>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main-content">
+
+      <!-- ── DASHBOARD ────────────────────────────── -->
+      <section class="content-section active" id="secDashboard">
+        <div class="page-title">Dashboard</div>
+        <div class="page-sub">Overview of your GameZone platform.</div>
+
+        <div class="stats-row">
+          <div class="stat-card">
+            <div class="stat-card__icon">🎮</div>
+            <div class="stat-card__val" id="statGames">—</div>
+            <div class="stat-card__lbl">Total Games</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon">📂</div>
+            <div class="stat-card__val" id="statCats">—</div>
+            <div class="stat-card__lbl">Categories</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card__icon">⭐</div>
+            <div class="stat-card__val" id="statFeat">—</div>
+            <div class="stat-card__lbl">Featured (max 10)</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Recent Games</h3>
+            <button class="btn btn-primary btn-sm" onclick="showSection('games')">View All</button>
+          </div>
+          <div class="panel-body" style="padding:0;">
+            <table class="adm-table">
+              <thead>
+                <tr>
+                  <th>Image</th><th>Title</th><th>Category</th><th>Featured</th>
+                </tr>
+              </thead>
+              <tbody id="recentGamesTbody">
+                <tr><td colspan="4" class="adm-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── CATEGORIES ───────────────────────────── -->
+      <section class="content-section" id="secCategories">
+        <div class="page-title">Categories</div>
+        <div class="page-sub">Manage game categories for the Library page.</div>
+
+        <!-- Add category form -->
+        <div class="panel">
+          <div class="panel-head"><h3>Add New Category</h3></div>
+          <div class="panel-body">
+            <div style="display:flex; gap:12px; align-items:flex-end;">
+              <div class="form-group" style="flex:1;margin:0;">
+                <label class="form-label">Category Name</label>
+                <input id="catNameInput" class="form-input" type="text" placeholder="e.g. Action, RPG, Puzzle…" maxlength="60" />
+              </div>
+              <button class="btn btn-primary" id="addCatBtn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add Category
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Categories table -->
+        <div class="panel">
+          <div class="panel-head">
+            <h3>All Categories</h3>
+            <span id="catCount" style="font-size:13px;color:var(--text-3);"></span>
+          </div>
+          <div class="panel-body" style="padding:0;">
+            <table class="adm-table">
+              <thead>
+                <tr><th>ID</th><th>Name</th><th style="text-align:right;">Action</th></tr>
+              </thead>
+              <tbody id="catTableBody">
+                <tr><td colspan="3" class="adm-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── GAMES ─────────────────────────────────── -->
+      <section class="content-section" id="secGames">
+        <div class="page-title">Games Management</div>
+        <div class="page-sub">Add, delete, and manage featured games (max 10 featured).</div>
+
+        <!-- Add game form -->
+        <div class="panel">
+          <div class="panel-head"><h3>Add New Game</h3></div>
+          <div class="panel-body">
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Game Title *</label>
+                <input id="gameTitle" class="form-input" type="text" placeholder="e.g. Shadow Strike Elite" maxlength="120" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Category</label>
+                <select id="gameCat" class="form-select">
+                  <option value="">— Select Category —</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Game URL</label>
+                <input id="gameUrl" class="form-input" type="url" placeholder="https://…" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Cover Image</label>
+                <label class="file-zone" for="gameImg">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <span id="gameImgLabel">Choose image (JPG, PNG, WEBP)</span>
+                  <input type="file" id="gameImg" accept=".jpg,.jpeg,.png,.webp,.gif" />
+                </label>
+              </div>
+            </div>
+            <div class="toggle-row">
+              <label class="adm-toggle">
+                <input type="checkbox" id="gameFeatured" />
+                <span class="adm-toggle__track"></span>
+              </label>
+              <label for="gameFeatured" style="cursor:pointer;">
+                ⭐ Make Featured
+                <small>(max 10 featured games allowed)</small>
+              </label>
+            </div>
+            <div style="margin-top:16px; display:flex; gap:10px; align-items:center;">
+              <button class="btn btn-primary" id="addGameBtn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Add Game
+              </button>
+              <span id="addGameStatus" style="font-size:13px;"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Games table -->
+        <div class="panel">
+          <div class="panel-head">
+            <h3>All Games</h3>
+            <span id="gameCount" style="font-size:13px;color:var(--text-3);"></span>
+          </div>
+          <div class="panel-body" style="padding:0;">
+            <table class="adm-table">
+              <thead>
+                <tr>
+                  <th>Cover</th>
+                  <th>Title</th>
+                  <th>Category</th>
+                  <th>URL</th>
+                  <th style="text-align:center;">Featured</th>
+                  <th style="text-align:right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="gameTableBody">
+                <tr><td colspan="6" class="adm-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main><!-- /main-content -->
+  </div><!-- /admin-layout -->
+</div><!-- /adminApp -->
+
+<div id="adminToast"></div>
+
+<script>
+'use strict';
+
+// ── Auth ──────────────────────────────────────────────────
+const LS_TOKEN = 'gz_admin_token';
+let TOKEN      = sessionStorage.getItem(LS_TOKEN) || '';
+
+function saveToken(t)    { TOKEN = t; sessionStorage.setItem(LS_TOKEN, t); }
+function clearToken()    { TOKEN = ''; sessionStorage.removeItem(LS_TOKEN); }
+function authHeader()    { return { Authorization: `Bearer ${TOKEN}` }; }
+
+// ── API helper ────────────────────────────────────────────
+async function api(method, url, body, isForm = false) {
+  const opts = {
+    method,
+    headers: { ...authHeader(), ...(isForm ? {} : { 'Content-Type': 'application/json' }) }
+  };
+  if (body) opts.body = isForm ? body : JSON.stringify(body);
+  const res  = await fetch(url, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+// ── Toast ─────────────────────────────────────────────────
+let toastT;
+function toast(msg, type = '') {
+  const el = document.getElementById('adminToast');
+  el.textContent = msg; el.className = `show ${type}`;
+  clearTimeout(toastT);
+  toastT = setTimeout(() => el.className = '', 3000);
+}
+
+// ── Section navigation ────────────────────────────────────
+function showSection(id) {
+  document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('sec' + id.charAt(0).toUpperCase() + id.slice(1)).classList.add('active');
+  document.querySelector(`[data-sec="${id}"]`).classList.add('active');
+  if (id === 'dashboard')  loadDashboard();
+  if (id === 'categories') loadCategories();
+  if (id === 'games')      loadGames();
+}
+
+document.querySelectorAll('.nav-item[data-sec]').forEach(btn => {
+  btn.addEventListener('click', () => showSection(btn.dataset.sec));
+});
+
+// ── Logout ────────────────────────────────────────────────
+document.getElementById('logoutBtn').addEventListener('click', () => {
+  clearToken();
+  document.getElementById('adminApp').style.display      = 'none';
+  document.getElementById('loginScreen').style.display   = 'flex';
+});
+
+// ══════════════════════════════════════════════════════════
+//  LOGIN
+// ══════════════════════════════════════════════════════════
+async function doLogin() {
+  const pass  = document.getElementById('loginPass').value.trim();
+  const errEl = document.getElementById('loginError');
+  const btn   = document.getElementById('loginBtn');
+  if (!pass) { errEl.textContent = 'Please enter a password.'; return; }
+  errEl.textContent = '';
+  btn.textContent = 'Signing in…'; btn.disabled = true;
+  try {
+    const data = await api('POST', '/admin/login', { password: pass });
+    saveToken(data.token);
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('adminApp').style.display    = 'block';
+    loadDashboard();
+    loadCategories();
+  } catch (e) {
+    errEl.textContent = e.message;
+    btn.textContent = 'Sign In'; btn.disabled = false;
+  }
+}
+
+document.getElementById('loginBtn').addEventListener('click', doLogin);
+document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+// ══════════════════════════════════════════════════════════
+//  DASHBOARD
+// ══════════════════════════════════════════════════════════
+async function loadDashboard() {
+  try {
+    const stats = await api('GET', '/api/admin/stats');
+    document.getElementById('statGames').textContent = stats.games;
+    document.getElementById('statCats').textContent  = stats.categories;
+    document.getElementById('statFeat').textContent  = `${stats.featured}/10`;
+  } catch(e) { console.error(e); }
+
+  try {
+    const games = await api('GET', '/api/games');
+    const tbody = document.getElementById('recentGamesTbody');
+    if (!games.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="adm-empty">No games yet. Add your first game.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = games.slice(0, 8).map(g => `
+      <tr>
+        <td>${g.image_url
+          ? `<img class="tbl-thumb" src="${g.image_url}" alt="" />`
+          : `<div class="tbl-thumb-placeholder">🎮</div>`}</td>
+        <td><strong>${esc(g.title)}</strong></td>
+        <td style="color:var(--text-2);">${esc(g.category_name || '—')}</td>
+        <td>${g.is_featured
+          ? '<span class="badge badge-featured">⭐ Featured</span>'
+          : '<span class="badge badge-normal">Normal</span>'}</td>
+      </tr>
+    `).join('');
+  } catch(e) { console.error(e); }
+}
+
+// ══════════════════════════════════════════════════════════
+//  CATEGORIES
+// ══════════════════════════════════════════════════════════
+let categories = [];
+
+async function loadCategories() {
+  try {
+    categories = await api('GET', '/api/categories');
+    renderCatTable();
+    populateCatSelect();
+  } catch(e) { toast('Failed to load categories: ' + e.message, 'err'); }
+}
+
+function renderCatTable() {
+  const tbody = document.getElementById('catTableBody');
+  document.getElementById('catCount').textContent = `${categories.length} categories`;
+  if (!categories.length) {
+    tbody.innerHTML = `<tr><td colspan="3"><div class="adm-empty">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
+      No categories yet. Add your first one above.
+    </div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = categories.map(c => `
+    <tr>
+      <td style="color:var(--text-3);">#${c.id}</td>
+      <td><strong>${esc(c.name)}</strong></td>
+      <td style="text-align:right;">
+        <button class="btn btn-danger btn-sm" onclick="deleteCategory(${c.id}, '${esc(c.name)}')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+          Delete
+        </button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function populateCatSelect() {
+  const sel = document.getElementById('gameCat');
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">— Select Category —</option>`;
+  categories.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id; opt.textContent = c.name;
+    if (c.id == cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+document.getElementById('addCatBtn').addEventListener('click', async () => {
+  const input = document.getElementById('catNameInput');
+  const name  = input.value.trim();
+  if (!name) { toast('Please enter a category name.', 'err'); return; }
+  try {
+    const cat = await api('POST', '/api/admin/categories', { name });
+    categories.push(cat);
+    renderCatTable();
+    populateCatSelect();
+    input.value = '';
+    toast(`✅ "${name}" added!`, 'ok');
+    SyncBus.emit();
+  } catch(e) { toast(e.message, 'err'); }
+});
+
+document.getElementById('catNameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('addCatBtn').click();
+});
+
+async function deleteCategory(id, name) {
+  if (!confirm(`Delete category "${name}"?\nGames in this category will become uncategorised.`)) return;
+  try {
+    await api('DELETE', `/api/admin/categories/${id}`);
+    categories = categories.filter(c => c.id !== id);
+    renderCatTable();
+    populateCatSelect();
+    toast(`🗑️ "${name}" deleted.`, 'ok');
+    SyncBus.emit();   // library pillari va game listlari yangilanadi
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+// ══════════════════════════════════════════════════════════
+//  GAMES
+// ══════════════════════════════════════════════════════════
+let games = [];
+
+async function loadGames() {
+  try {
+    games = await api('GET', '/api/games');
+    renderGamesTable();
+  } catch(e) { toast('Failed to load games: ' + e.message, 'err'); }
+}
+
+function renderGamesTable() {
+  const tbody = document.getElementById('gameTableBody');
+  document.getElementById('gameCount').textContent = `${games.length} games`;
+  if (!games.length) {
+    tbody.innerHTML = `<tr><td colspan="6"><div class="adm-empty">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+      No games yet. Add your first game using the form above.
+    </div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = games.map(g => `
+    <tr>
+      <td>${g.image_url
+        ? `<img class="tbl-thumb" src="${g.image_url}" alt="" />`
+        : `<div class="tbl-thumb-placeholder">🎮</div>`}</td>
+      <td><strong>${esc(g.title)}</strong></td>
+      <td style="color:var(--text-2); font-size:12px;">${esc(g.category_name || '—')}</td>
+      <td style="color:var(--blue); font-size:12px; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+        <a href="${esc(g.game_url)}" target="_blank" title="${esc(g.game_url)}">${esc(g.game_url)}</a>
+      </td>
+      <td style="text-align:center;">
+        <label class="feat-toggle" title="${g.is_featured ? 'Unfeature' : 'Make Featured'}">
+          <input type="checkbox" ${g.is_featured ? 'checked' : ''}
+                 onchange="toggleFeatured(${g.id}, this)" />
+          <span class="feat-toggle__t"></span>
+        </label>
+      </td>
+      <td style="text-align:right;">
+        <button class="btn btn-danger btn-sm" onclick="deleteGame(${g.id}, '${esc(g.title)}')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>
+          Delete
+        </button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// File label update
+document.getElementById('gameImg').addEventListener('change', function() {
+  document.getElementById('gameImgLabel').textContent =
+    this.files[0] ? this.files[0].name : 'Choose image (JPG, PNG, WEBP)';
+});
+
+document.getElementById('addGameBtn').addEventListener('click', async () => {
+  const title      = document.getElementById('gameTitle').value.trim();
+  const category_id = document.getElementById('gameCat').value;
+  const game_url   = document.getElementById('gameUrl').value.trim() || '#';
+  const is_featured = document.getElementById('gameFeatured').checked ? '1' : '0';
+  const imgFile    = document.getElementById('gameImg').files[0];
+  const statusEl   = document.getElementById('addGameStatus');
+  const btn        = document.getElementById('addGameBtn');
+
+  if (!title) { toast('Game title is required.', 'err'); return; }
+
+  const fd = new FormData();
+  fd.append('title',       title);
+  fd.append('category_id', category_id);
+  fd.append('game_url',    game_url);
+  fd.append('is_featured', is_featured);
+  if (imgFile) fd.append('image', imgFile);
+
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span> Adding…`;
+  statusEl.textContent = '';
+
+  try {
+    const created = await api('POST', '/api/admin/games', fd, true);
+    games.unshift({ ...created, category_name: categories.find(c=>c.id==category_id)?.name||null, image_path: null });
+    // Reload to get image_url
+    await loadGames();
+    await loadDashboard();
+
+    // Reset form
+    // FIX 1: forEach parametri 'fieldId' — tashqi 'id' (game id) bilan shadowing yo'q
+    ['gameTitle','gameUrl'].forEach(fieldId => document.getElementById(fieldId).value = '');
+    document.getElementById('gameCat').value        = '';
+    document.getElementById('gameFeatured').checked  = false;
+    document.getElementById('gameImg').value         = '';
+    document.getElementById('gameImgLabel').textContent = 'Choose image (JPG, PNG, WEBP)';
+    toast(`✅ "${title}" added!`, 'ok');
+    SyncBus.emit();
+  // FIX 2: catch + finally bloklari qo'shildi — try yolg'iz qolmasligi uchun
+  } catch(e) {
+    toast(e.message || 'Failed to add game.', 'err');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Game`;
+  }
+});
+
+async function toggleFeatured(id, checkbox) {
+  const featured = checkbox.checked;
+  // FIX 3: try/catch to'g'ri tuzildi — catch ichida 'e' aniqlanadi,
+  //         revert mantiqan catch ichiga ko'chirildi
+  try {
+    await api('PATCH', `/api/admin/games/${id}/featured`, { featured });
+    const g = games.find(x => x.id === id);
+    if (g) g.is_featured = featured ? 1 : 0;
+    await loadDashboard();
+    toast(featured ? '⭐ Game featured!' : '✓ Removed from featured.', featured ? 'ok' : '');
+    SyncBus.emit();
+  } catch(e) {
+    checkbox.checked = !featured;   // muvaffaqiyatsiz bo'lsa UI qaytariladi
+    toast(e.message || 'Failed to update featured status.', 'err');
+  }
+}
+
+async function deleteGame(id, title) {
+  if (!confirm(`Delete "${title}" permanently?\nThis cannot be undone.`)) return;
+  try {
+    await api('DELETE', `/api/admin/games/${id}`);
+    games = games.filter(g => g.id !== id);
+    renderGamesTable();
+    await loadDashboard();
+    toast(`🗑️ "${title}" deleted.`, 'ok');
+    SyncBus.emit();   // barcha tablar yangilanadi
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+// ── HTML escape ───────────────────────────────────────────
+function esc(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ══════════════════════════════════════════════════════════
+//  TASK 4 — SyncBus (admin panel versiyasi)
+//
+//  Admin panel har qanday ma'lumot o'zgartirganda SyncBus.emit()
+//  chaqiradi → boshqa barcha ochiq tablar (library, index, favorites)
+//  darhol fetchData() chaqiradi va sahifani yangilamasdan
+//  o'z kontentini yangilaydi.
+// ══════════════════════════════════════════════════════════
+const SyncBus = (() => {
+  if (typeof BroadcastChannel === 'undefined') return { emit: () => {} };
+  const ch = new BroadcastChannel('gz_sync');
+  return {
+    emit(type = 'GAMES_UPDATED') {
+      ch.postMessage({ type, ts: Date.now() });
+    }
+  };
+})();
+
+// ══════════════════════════════════════════════════════════
+//  INIT — check if already logged in
+// ══════════════════════════════════════════════════════════
+(async function init() {
+  if (!TOKEN) return; // show login screen
+  try {
+    await api('GET', '/admin/verify');
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('adminApp').style.display    = 'block';
+    loadDashboard();
+    loadCategories();
+  } catch {
+    clearToken(); // token expired / invalid
+  }
+}());
+</script>
+</body>
+</html>

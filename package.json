@@ -1,0 +1,16 @@
+{
+  "name": "gamezone",
+  "version": "4.0.0",
+  "description": "GameZone — Full-Stack Game Aggregator",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --experimental-sqlite server.js",
+    "dev":   "node --experimental-sqlite --watch server.js"
+  },
+  "dependencies": {
+    "cors":    "*",
+    "dotenv":  "*",
+    "express": "*",
+    "multer":  "*"
+  }
+}
