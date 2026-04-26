@@ -292,12 +292,12 @@
       });
     });
 
-    // Card click opens game inside overlay iframe (so user doesn't leave the site)
+    // Card click opens game url
     div.addEventListener('click', () => {
       const url = game.game_url && game.game_url !== '#'
         ? game.game_url
         : null;
-      if (url) openGameOverlay(url, game.title);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
     });
 
     return div;

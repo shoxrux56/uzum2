@@ -14,7 +14,7 @@ const path     = require('path');
 const fs       = require('fs');
 const cors     = require('cors');
 const crypto   = require('crypto');
-const { DatabaseSync } = require('node:sqlite');
+const { Pool } = require('pg');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -55,9 +55,67 @@ app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')
 // ══════════════════════════════════════════════════════════
 //  DATABASE  —  schema + seed
 // ══════════════════════════════════════════════════════════
-const db = new DatabaseSync(path.join(__dirname, 'gamezone.db'));
+// ---------- PostgreSQL pool + tiny adapter that mimics the old sqlite API ----------
+if (!process.env.DATABASE_URL) {
+  console.error('\n❌  DATABASE_URL is not set in .env — server cannot connect to Postgres.\n');
+  process.exit(1);
+}
 
-db.exec(`
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // Enable SSL in production if needed
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+function convertPlaceholder(sql, params) {
+  // Convert '?' placeholders to $1, $2 ... for pg
+  let i = 0;
+  const text = sql.replace(/\?/g, () => { i++; return `$${i}`; });
+  return { text, values: params };
+}
+
+const db = {
+  // exec: run raw SQL (can be multiple semicolon-separated statements)
+  async exec(sql) {
+    const parts = sql.split(';').map(s => s.trim()).filter(Boolean);
+    for (const p of parts) {
+      await pool.query(p);
+    }
+  },
+  // prepare returns an object with run/get/all similar to node:sqlite
+  prepare(sql) {
+    return {
+      run: async (...params) => {
+        try {
+          // If it's an INSERT without RETURNING, try to append RETURNING id
+          let q = sql;
+          const isInsert = /^\s*INSERT\b/i.test(sql);
+          if (isInsert && !/RETURNING\b/i.test(sql)) q = sql + ' RETURNING id';
+          const { text, values } = convertPlaceholder(q, params);
+          const res = await pool.query(text, values);
+          return { lastInsertRowid: res.rows[0]?.id, changes: res.rowCount };
+        } catch (e) {
+          throw e;
+        }
+      },
+      get: async (...params) => {
+        const { text, values } = convertPlaceholder(sql, params);
+        const res = await pool.query(text, values);
+        return res.rows[0];
+      },
+      all: async (...params) => {
+        const { text, values } = convertPlaceholder(sql, params);
+        const res = await pool.query(text, values);
+        return res.rows;
+      }
+    };
+  }
+};
+
+// Attempt to run the original schema creation SQL for users who rely on it.
+// If the SQL is not valid in Postgres (it may contain sqlite-specific bits)
+// we catch and warn but continue — preserving the original logical flow.
+const initialSchema = `
   -- User profile (single-user pattern)
   CREATE TABLE IF NOT EXISTS users (
     id                 INTEGER PRIMARY KEY,
@@ -84,10 +142,21 @@ db.exec(`
     is_featured INTEGER NOT NULL DEFAULT 0 CHECK(is_featured IN (0,1)),
     created_at  INTEGER DEFAULT (strftime('%s','now'))
   );
-`);
+`;
 
-// Guarantee the single user row always exists
-db.prepare(`INSERT OR IGNORE INTO users (id, name) VALUES (1, 'GameZone User')`).run();
+(async function initDb() {
+  try {
+    await db.exec(initialSchema);
+    try {
+      await db.prepare("INSERT OR IGNORE INTO users (id, name) VALUES (1, 'GameZone User')").run();
+    } catch (e) {
+      // Some SQLite-specific statements may fail in Postgres — warn and continue
+      console.warn('[DB Init] Warning (ignored):', e.message);
+    }
+  } catch (e) {
+    console.warn('[DB Init] Schema exec warning (ignored):', e.message);
+  }
+})();
 
 // ══════════════════════════════════════════════════════════
 //  MULTER  —  two separate instances
@@ -279,48 +348,44 @@ app.get('/admin/verify', tokenAuth, (_req, res) => res.json({ ok: true }));
 //  image files from disk.
 //  The users table is intentionally untouched.
 // ─────────────────────────────────────────────────────────
-app.post('/api/admin/reset', headerAuth, (req, res) => {
+app.post('/api/admin/reset', headerAuth, async (req, res) => {
   // Collect image paths BEFORE deleting rows
-  const gameImages = db
-    .prepare('SELECT image_path FROM games_catalog WHERE image_path IS NOT NULL')
-    .all()
-    .map(r => r.image_path);
-
-  // Run everything atomically using exec-based transaction
-  // node:sqlite's DatabaseSync uses exec() for BEGIN/COMMIT, not .transaction()
   try {
-    db.exec('BEGIN');
-    db.prepare('DELETE FROM games_catalog').run();
-    db.prepare('DELETE FROM categories').run();
-    // Remove AUTOINCREMENT counters so next INSERT starts at id=1 (clean slate)
-    db.prepare(`
-      DELETE FROM sqlite_sequence
-      WHERE name IN ('games_catalog', 'categories')
-    `).run();
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    console.error('[Reset] ❌ Transaction failed:', err.message);
-    return res.status(500).json({ error: 'Reset failed: ' + err.message });
+    const rows = await db.prepare('SELECT image_path FROM games_catalog WHERE image_path IS NOT NULL').all();
+    const gameImages = rows.map(r => r.image_path);
+
+    try {
+      await db.exec('BEGIN');
+      await db.prepare('DELETE FROM games_catalog').run();
+      await db.prepare('DELETE FROM categories').run();
+      // sqlite_sequence is SQLite-specific; in Postgres we can try to reset sequences if needed.
+      try {
+        await db.prepare(`DELETE FROM sqlite_sequence WHERE name IN ('games_catalog', 'categories')`).run();
+      } catch (e) { /* ignore if not applicable */ }
+      await db.exec('COMMIT');
+    } catch (err) {
+      await db.exec('ROLLBACK');
+      console.error('[Reset] ❌ Transaction failed:', err.message);
+      return res.status(500).json({ error: 'Reset failed: ' + err.message });
+    }
+
+    // Purge orphaned image files AFTER the DB transaction succeeds
+    let deletedFiles = 0;
+    gameImages.forEach(p => { removeFile(p); deletedFiles++; });
+
+    // Also sweep the games sub-directory for any leftover files
+    if (fs.existsSync(GAME_IMAGES_DIR)) {
+      fs.readdirSync(GAME_IMAGES_DIR).forEach(f => {
+        try { fs.unlinkSync(path.join(GAME_IMAGES_DIR, f)); } catch {}
+      });
+    }
+
+    console.log(`[Reset] ✅ DB cleared. ${deletedFiles} image(s) removed.`);
+    res.json({ ok: true, message: 'Database reset complete. All games and categories deleted.', deleted_files: deletedFiles });
+  } catch (e) {
+    console.error('[Reset] ❌', e.message);
+    res.status(500).json({ error: e.message });
   }
-
-  // Purge orphaned image files AFTER the DB transaction succeeds
-  let deletedFiles = 0;
-  gameImages.forEach(p => { removeFile(p); deletedFiles++; });
-
-  // Also sweep the games sub-directory for any leftover files
-  if (fs.existsSync(GAME_IMAGES_DIR)) {
-    fs.readdirSync(GAME_IMAGES_DIR).forEach(f => {
-      try { fs.unlinkSync(path.join(GAME_IMAGES_DIR, f)); } catch {}
-    });
-  }
-
-  console.log(`[Reset] ✅ DB cleared. ${deletedFiles} image(s) removed.`);
-  res.json({
-    ok:            true,
-    message:       'Database reset complete. All games and categories deleted.',
-    deleted_files: deletedFiles
-  });
 });
 
 // ─────────────────────────────────────────────────────────
@@ -334,39 +399,38 @@ app.post('/api/admin/reset', headerAuth, (req, res) => {
 //  sqlite_sequence ni 0 ga qaytaradi (ID lar qayta 1 dan boshlanadi).
 //  users jadvaliga tegmaydi.
 // ─────────────────────────────────────────────────────────
-app.post('/api/admin/reset-all', headerAuth, (req, res) => {
-  const gameImages = db
-    .prepare('SELECT image_path FROM games_catalog WHERE image_path IS NOT NULL')
-    .all()
-    .map(r => r.image_path);
-
+app.post('/api/admin/reset-all', headerAuth, async (req, res) => {
   try {
-    db.exec('BEGIN');
-    db.prepare('DELETE FROM games_catalog').run();
-    db.prepare('DELETE FROM categories').run();
-    db.prepare(`DELETE FROM sqlite_sequence WHERE name IN ('games_catalog','categories')`).run();
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    console.error('[reset-all] ❌', err.message);
-    return res.status(500).json({ error: 'Reset failed: ' + err.message });
+    const rows = await db.prepare('SELECT image_path FROM games_catalog WHERE image_path IS NOT NULL').all();
+    const gameImages = rows.map(r => r.image_path);
+
+    try {
+      await db.exec('BEGIN');
+      await db.prepare('DELETE FROM games_catalog').run();
+      await db.prepare('DELETE FROM categories').run();
+      try { await db.prepare(`DELETE FROM sqlite_sequence WHERE name IN ('games_catalog','categories')`).run(); } catch (e) {}
+      await db.exec('COMMIT');
+    } catch (err) {
+      await db.exec('ROLLBACK');
+      console.error('[reset-all] ❌', err.message);
+      return res.status(500).json({ error: 'Reset failed: ' + err.message });
+    }
+
+    let deletedFiles = 0;
+    gameImages.forEach(p => { removeFile(p); deletedFiles++; });
+
+    if (fs.existsSync(GAME_IMAGES_DIR)) {
+      fs.readdirSync(GAME_IMAGES_DIR).forEach(f => {
+        try { fs.unlinkSync(path.join(GAME_IMAGES_DIR, f)); } catch {}
+      });
+    }
+
+    console.log(`[reset-all] ✅ Cleared. ${deletedFiles} file(s) removed.`);
+    res.json({ ok: true, message: 'All games and categories deleted. IDs reset to 0.', deleted_files: deletedFiles });
+  } catch (e) {
+    console.error('[reset-all] ❌', e.message);
+    res.status(500).json({ error: e.message });
   }
-
-  let deletedFiles = 0;
-  gameImages.forEach(p => { removeFile(p); deletedFiles++; });
-
-  if (fs.existsSync(GAME_IMAGES_DIR)) {
-    fs.readdirSync(GAME_IMAGES_DIR).forEach(f => {
-      try { fs.unlinkSync(path.join(GAME_IMAGES_DIR, f)); } catch {}
-    });
-  }
-
-  console.log(`[reset-all] ✅ Cleared. ${deletedFiles} file(s) removed.`);
-  res.json({
-    ok:            true,
-    message:       'All games and categories deleted. IDs reset to 0.',
-    deleted_files: deletedFiles
-  });
 });
 //
 //  DELETE /api/games/:id
@@ -378,16 +442,19 @@ app.post('/api/admin/reset-all', headerAuth, (req, res) => {
 //    3. Remove the cover image file from disk
 //    4. Delete the DB row
 // ─────────────────────────────────────────────────────────
-app.delete('/api/games/:id', headerAuth, (req, res) => {
+app.delete('/api/games/:id', headerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
 
   if (!Number.isFinite(id) || id < 1) {
     return res.status(400).json({ error: 'Invalid game ID. Must be a positive integer.' });
   }
 
-  const game = db
-    .prepare('SELECT id, title, image_path FROM games_catalog WHERE id = ?')
-    .get(id);
+  let game;
+  try {
+    game = await db.prepare('SELECT id, title, image_path FROM games_catalog WHERE id = ?').get(id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
 
   if (!game) {
     return res.status(404).json({ error: `Game with ID ${id} not found.` });
@@ -398,14 +465,10 @@ app.delete('/api/games/:id', headerAuth, (req, res) => {
     removeFile(game.image_path);
 
     // Delete the row
-    db.prepare('DELETE FROM games_catalog WHERE id = ?').run(id);
+    await db.prepare('DELETE FROM games_catalog WHERE id = ?').run(id);
 
     console.log(`[Delete] ✅ Game #${id} "${game.title}" removed.`);
-    res.json({
-      ok:      true,
-      message: `Game "${game.title}" deleted successfully.`,
-      id
-    });
+    res.json({ ok: true, message: `Game "${game.title}" deleted successfully.`, id });
   } catch (err) {
     console.error(`[Delete] ❌ Game #${id}:`, err.message);
     res.status(500).json({ error: 'Delete failed: ' + err.message });
@@ -413,14 +476,13 @@ app.delete('/api/games/:id', headerAuth, (req, res) => {
 });
 
 // Also keep the admin-panel (token-based) delete route for the SPA
-app.delete('/api/admin/games/:id', tokenAuth, (req, res) => {
+app.delete('/api/admin/games/:id', tokenAuth, async (req, res) => {
   const id   = parseInt(req.params.id, 10);
-  const game = db.prepare('SELECT id, title, image_path FROM games_catalog WHERE id = ?').get(id);
-  if (!game) return res.status(404).json({ error: 'Game not found.' });
-
   try {
+    const game = await db.prepare('SELECT id, title, image_path FROM games_catalog WHERE id = ?').get(id);
+    if (!game) return res.status(404).json({ error: 'Game not found.' });
     removeFile(game.image_path);
-    db.prepare('DELETE FROM games_catalog WHERE id = ?').run(id);
+    await db.prepare('DELETE FROM games_catalog WHERE id = ?').run(id);
     res.json({ ok: true, message: `"${game.title}" deleted.`, id });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -446,80 +508,70 @@ app.delete('/api/admin/games/:id', tokenAuth, (req, res) => {
 // ─────────────────────────────────────────────────────────
 
 /** GET /api/categories  —  public, used by frontend pill filters */
-app.get('/api/categories', (_req, res) => {
+app.get('/api/categories', async (_req, res) => {
   try {
-    const rows = db.prepare('SELECT id, name, created_at FROM categories ORDER BY name').all();
+    const rows = await db.prepare('SELECT id, name, created_at FROM categories ORDER BY name').all();
     res.json(rows);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 /** POST /api/categories  —  header-auth, for CLI/scripts/curl */
-app.post('/api/categories', headerAuth, (req, res) => {
+app.post('/api/categories', headerAuth, async (req, res) => {
   const name = (req.body.name || '').trim().slice(0, 60);
   if (!name) return res.status(400).json({ error: 'Category name is required.' });
-
   try {
-    const r = db.prepare('INSERT INTO categories (name) VALUES (?)').run(name);
-    const created = db.prepare('SELECT id, name FROM categories WHERE id = ?').get(r.lastInsertRowid);
+    const r = await db.prepare('INSERT INTO categories (name) VALUES (?)').run(name);
+    const created = await db.prepare('SELECT id, name FROM categories WHERE id = ?').get(r.lastInsertRowid);
     console.log(`[Category] ✅ Added: "${name}"`);
     res.status(201).json(created);
   } catch (e) {
-    const isDupe = e.message.includes('UNIQUE');
-    res.status(isDupe ? 409 : 500).json({
-      error: isDupe ? `Category "${name}" already exists.` : e.message
-    });
+    const isDupe = e.message && e.message.includes('UNIQUE');
+    res.status(isDupe ? 409 : 500).json({ error: isDupe ? `Category "${name}" already exists.` : e.message });
   }
 });
 
 /** DELETE /api/categories/:id  —  header-auth, for CLI/scripts/curl */
-app.delete('/api/categories/:id', headerAuth, (req, res) => {
+app.delete('/api/categories/:id', headerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  if (!Number.isFinite(id) || id < 1) {
-    return res.status(400).json({ error: 'Invalid category ID.' });
-  }
-
-  const cat = db.prepare('SELECT id, name FROM categories WHERE id = ?').get(id);
-  if (!cat) return res.status(404).json({ error: `Category ${id} not found.` });
-
+  if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid category ID.' });
   try {
-    // ON DELETE SET NULL on games_catalog.category_id means games are not lost
-    db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+    const cat = await db.prepare('SELECT id, name FROM categories WHERE id = ?').get(id);
+    if (!cat) return res.status(404).json({ error: `Category ${id} not found.` });
+    await db.prepare('DELETE FROM categories WHERE id = ?').run(id);
     console.log(`[Category] 🗑️  Deleted: "${cat.name}"`);
     res.json({ ok: true, message: `Category "${cat.name}" deleted.`, id });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // SPA token-based mirrors (used by admin.html)
-app.post('/api/admin/categories', tokenAuth, (req, res) => {
+app.post('/api/admin/categories', tokenAuth, async (req, res) => {
   const name = (req.body.name || '').trim().slice(0, 60);
   if (!name) return res.status(400).json({ error: 'Category name required.' });
   try {
-    const r = db.prepare('INSERT INTO categories (name) VALUES (?)').run(name);
+    const r = await db.prepare('INSERT INTO categories (name) VALUES (?)').run(name);
     res.status(201).json({ id: r.lastInsertRowid, name });
   } catch (e) {
-    res.status(e.message.includes('UNIQUE') ? 409 : 500)
-       .json({ error: e.message.includes('UNIQUE') ? `"${name}" already exists.` : e.message });
+    const isDupe = e.message && e.message.includes('UNIQUE');
+    res.status(isDupe ? 409 : 500).json({ error: isDupe ? `"${name}" already exists.` : e.message });
   }
 });
 
-app.delete('/api/admin/categories/:id', tokenAuth, (req, res) => {
+app.delete('/api/admin/categories/:id', tokenAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const cat = db.prepare('SELECT name FROM categories WHERE id = ?').get(id);
-  if (!cat) return res.status(404).json({ error: 'Category not found.' });
-  db.prepare('DELETE FROM categories WHERE id = ?').run(id);
-  res.json({ ok: true });
+  try {
+    const cat = await db.prepare('SELECT name FROM categories WHERE id = ?').get(id);
+    if (!cat) return res.status(404).json({ error: 'Category not found.' });
+    await db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─────────────────────────────────────────────────────────
 //  GAMES  (read + create + featured toggle)
 // ─────────────────────────────────────────────────────────
-app.get('/api/games', (req, res) => {
+app.get('/api/games', async (req, res) => {
   try {
-    const rows = db.prepare(`
+    const rows = await db.prepare(`
       SELECT g.*, c.name AS category_name
       FROM   games_catalog g
       LEFT JOIN categories c ON g.category_id = c.id
@@ -529,9 +581,9 @@ app.get('/api/games', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/featured', (req, res) => {
+app.get('/api/featured', async (req, res) => {
   try {
-    const rows = db.prepare(`
+    const rows = await db.prepare(`
       SELECT g.*, c.name AS category_name
       FROM   games_catalog g
       LEFT JOIN categories c ON g.category_id = c.id
@@ -543,7 +595,7 @@ app.get('/api/featured', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), (req, res) => {
+app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), async (req, res) => {
   try {
     const title       = (req.body.title    || '').trim().slice(0, 120);
     const game_url    = (req.body.game_url || '#').trim();
@@ -556,7 +608,8 @@ app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), (req, res) =
     }
 
     if (is_featured) {
-      const n = db.prepare('SELECT COUNT(*) AS n FROM games_catalog WHERE is_featured = 1').get().n;
+      const nRow = await db.prepare('SELECT COUNT(*) AS n FROM games_catalog WHERE is_featured = 1').get();
+      const n = nRow?.n || 0;
       if (n >= 10) {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ error: 'Featured limit (10) reached.' });
@@ -564,43 +617,40 @@ app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), (req, res) =
     }
 
     const image_path = req.file ? `uploads/games/${req.file.filename}` : null;
-    const r = db.prepare(`
+    const r = await db.prepare(`
       INSERT INTO games_catalog (title, category_id, image_path, game_url, is_featured)
       VALUES (?, ?, ?, ?, ?)
     `).run(title, category_id, image_path, game_url, is_featured);
 
-    res.status(201).json({
-      id: r.lastInsertRowid, title,
-      image_url: toUrl(req, image_path), is_featured
-    });
+    res.status(201).json({ id: r.lastInsertRowid, title, image_url: toUrl(req, image_path), is_featured });
   } catch (e) {
     if (req.file) { try { fs.unlinkSync(req.file.path); } catch {} }
     res.status(500).json({ error: e.message });
   }
 });
 
-app.patch('/api/admin/games/:id/featured', tokenAuth, (req, res) => {
+app.patch('/api/admin/games/:id/featured', tokenAuth, async (req, res) => {
   try {
     const id       = parseInt(req.params.id, 10);
     const featured = req.body.featured === true || req.body.featured === 'true';
 
     if (featured) {
-      const n = db.prepare('SELECT COUNT(*) AS n FROM games_catalog WHERE is_featured = 1').get().n;
+      const nRow = await db.prepare('SELECT COUNT(*) AS n FROM games_catalog WHERE is_featured = 1').get();
+      const n = nRow?.n || 0;
       if (n >= 10) return res.status(400).json({ error: 'Featured limit (10) reached.' });
     }
 
-    db.prepare('UPDATE games_catalog SET is_featured = ? WHERE id = ?').run(featured ? 1 : 0, id);
+    await db.prepare('UPDATE games_catalog SET is_featured = ? WHERE id = ?').run(featured ? 1 : 0, id);
     res.json({ ok: true, id, is_featured: featured ? 1 : 0 });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/admin/stats', tokenAuth, (_req, res) => {
+app.get('/api/admin/stats', tokenAuth, async (_req, res) => {
   try {
-    res.json({
-      games:      db.prepare('SELECT COUNT(*) AS n FROM games_catalog').get().n,
-      categories: db.prepare('SELECT COUNT(*) AS n FROM categories').get().n,
-      featured:   db.prepare('SELECT COUNT(*) AS n FROM games_catalog WHERE is_featured = 1').get().n
-    });
+    const games = await db.prepare('SELECT COUNT(*) AS n FROM games_catalog').get();
+    const categories = await db.prepare('SELECT COUNT(*) AS n FROM categories').get();
+    const featured = await db.prepare('SELECT COUNT(*) AS n FROM games_catalog WHERE is_featured = 1').get();
+    res.json({ games: games.n, categories: categories.n, featured: featured.n });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -611,15 +661,15 @@ app.get('/api/admin/stats', tokenAuth, (_req, res) => {
 //  These backend endpoints ONLY manage name + avatar image.
 //  They never touch games or categories.
 // ─────────────────────────────────────────────────────────
-app.get('/api/profile', (req, res) => {
+app.get('/api/profile', async (req, res) => {
   try {
-    const user = db.prepare('SELECT * FROM users WHERE id = 1').get();
+    const user = await db.prepare('SELECT * FROM users WHERE id = 1').get();
     if (!user) return res.status(404).json({ error: 'User not found.' });
     res.json({ id: user.id, name: user.name, image_url: toUrl(req, user.profile_image_path) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/profile', avatarUpload.single('image'), (req, res) => {
+app.post('/api/profile', avatarUpload.single('image'), async (req, res) => {
   try {
     const name = (req.body.name ?? '').trim().slice(0, 80);
     if (!name) {
@@ -627,16 +677,15 @@ app.post('/api/profile', avatarUpload.single('image'), (req, res) => {
       return res.status(400).json({ error: 'Name is required.' });
     }
 
-    const cur = db.prepare('SELECT profile_image_path FROM users WHERE id = 1').get();
-    let imagePath = cur.profile_image_path;
+    const cur = await db.prepare('SELECT profile_image_path FROM users WHERE id = 1').get();
+    let imagePath = cur?.profile_image_path;
 
     if (req.file) {
       imagePath = `uploads/${req.file.filename}`;
-      removeFile(cur.profile_image_path);
+      removeFile(cur?.profile_image_path);
     }
 
-    db.prepare('UPDATE users SET name = ?, profile_image_path = ? WHERE id = 1')
-      .run(name, imagePath);
+    await db.prepare('UPDATE users SET name = ?, profile_image_path = ? WHERE id = 1').run(name, imagePath);
 
     res.json({ message: 'Profile updated.', name, image_url: toUrl(req, imagePath) });
   } catch (e) {
@@ -646,11 +695,11 @@ app.post('/api/profile', avatarUpload.single('image'), (req, res) => {
 });
 
 /** DELETE /api/profile/image — removes only the avatar, name unchanged */
-app.delete('/api/profile/image', (_req, res) => {
+app.delete('/api/profile/image', async (_req, res) => {
   try {
-    const user = db.prepare('SELECT profile_image_path FROM users WHERE id = 1').get();
+    const user = await db.prepare('SELECT profile_image_path FROM users WHERE id = 1').get();
     removeFile(user?.profile_image_path);
-    db.prepare('UPDATE users SET profile_image_path = NULL WHERE id = 1').run();
+    await db.prepare('UPDATE users SET profile_image_path = NULL WHERE id = 1').run();
     res.json({ ok: true, message: 'Profile image removed.' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

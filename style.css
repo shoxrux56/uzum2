@@ -383,62 +383,6 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .gz-overlay.open .gz-modal { transform: translateY(0); }
 
-/* Game overlay (iframe) specific styles */
-#gz-game-overlay.gz-overlay {
-  align-items: center; /* center vertically */
-  justify-content: center; /* center horizontally */
-  background: rgba(10,10,14,.6);
-}
-#gz-game-overlay .gz-modal--game {
-  width: min(980px, 96%);
-  height: 88vh;
-  max-height: 92vh;
-  border-radius: 14px;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 18px 60px rgba(2,6,23,.5);
-}
-#gz-game-overlay .gz-modal--game > div:first-child {
-  background: linear-gradient(90deg,#111218 0%, rgba(20,20,28,0.92) 100%);
-  color: #fff;
-  /* slightly larger horizontal padding so controls don't touch the curved edges */
-  padding: 12px 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-#gz-game-overlay .gz-modal--game .gz-modal__opennew {
-  color: rgba(255,255,255,.9);
-  text-decoration: none;
-  font-size: 13px;
-}
-#gz-game-overlay .gz-modal--game .gz-modal__opennew:hover { opacity: 1; }
-#gz-game-overlay .gz-modal--game #gz-game-close {
-  /* Make the close button visually distinct and ensure the X is dark */
-  background: #ffffff; /* white background */
-  color: #111111;      /* black X */
-  border: none;
-  padding: 8px 10px;
-  border-radius: 10px;
-  cursor: pointer;
-  box-shadow: 0 6px 18px rgba(2,6,23,.26);
-}
-#gz-game-overlay .gz-modal--game #gz-game-close:hover {
-  transform: translateY(-1px);
-}
-#gz-game-overlay .gz-modal--game #gz-game-iframe {
-  width: 100%; height: 100%; border: 0; display: block; background: #fff;
-}
-
-/* Responsive: full width on small screens */
-@media (max-width: 640px) {
-  #gz-game-overlay .gz-modal--game { width: 98%; height: 94vh; border-radius: 12px; }
-  #gz-game-overlay .gz-modal--game > div:first-child { padding: 8px 10px; }
-}
-
 .gz-modal__drag {
   width: 40px; height: 5px;
   background: var(--border);

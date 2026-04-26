@@ -289,8 +289,7 @@ function buildCard(game) {
       ? game.game_url
       : null;
     if (url) {
-      // Open game inside an overlay iframe instead of leaving the site
-      openGameOverlay(url, game.title);
+      window.open(url, '_blank', 'noopener,noreferrer');
     }
   });
 
@@ -693,63 +692,6 @@ function injectModal() {
     if (e.key === 'Enter') submitComment();
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-}
-
-/**
- * Game overlay (iframe) — opens external game inside an overlay so user stays on site.
- * injectGameOverlay() creates the DOM node and wiring; openGameOverlay(url,title)
- * sets the src and shows the overlay. closeGameOverlay() hides and clears it.
- */
-function injectGameOverlay() {
-  if (document.getElementById('gz-game-overlay')) return;
-  const el = document.createElement('div');
-  el.id = 'gz-game-overlay';
-  el.className = 'gz-overlay';
-  el.innerHTML = `
-    <div class="gz-modal gz-modal--game" role="dialog" aria-modal="true">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);">
-        <div style="font-weight:800;font-family:'Syne',sans-serif;">Game</div>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <a id="gz-game-open-new" class="gz-modal__opennew" target="_blank" rel="noopener noreferrer" style="font-size:13px;text-decoration:none;color:var(--text-2)">Open in new tab</a>
-          <button id="gz-game-close" aria-label="Close" style="background:var(--surface);border-radius:10px;padding:6px 10px;border:1px solid var(--border);">✕</button>
-        </div>
-      </div>
-      <div style="flex:1;min-height:60vh;overflow:hidden;">
-        <iframe id="gz-game-iframe" src="about:blank" frameborder="0" style="width:100%;height:100%;min-height:60vh;display:block;" allowfullscreen></iframe>
-      </div>
-    </div>`;
-  document.body.appendChild(el);
-
-  el.addEventListener('click', e => { if (e.target === el) closeGameOverlay(); });
-  el.querySelector('#gz-game-close').addEventListener('click', closeGameOverlay);
-  el.querySelector('#gz-game-open-new').addEventListener('click', () => {
-    const a = document.getElementById('gz-game-open-new');
-    const href = a.getAttribute('href');
-    if (href) window.open(href, '_blank', 'noopener,noreferrer');
-  });
-}
-
-function openGameOverlay(url, title) {
-  injectGameOverlay();
-  const overlay = document.getElementById('gz-game-overlay');
-  if (!overlay) return;
-  const iframe = overlay.querySelector('#gz-game-iframe');
-  const openNew = overlay.querySelector('#gz-game-open-new');
-  iframe.src = url;
-  openNew.href = url;
-  // show overlay
-  overlay.classList.add('open');
-  document.body.style.overflow = 'hidden';
-}
-
-function closeGameOverlay() {
-  const overlay = document.getElementById('gz-game-overlay');
-  if (!overlay) return;
-  const iframe = overlay.querySelector('#gz-game-iframe');
-  // stop the iframe
-  if (iframe) iframe.src = 'about:blank';
-  overlay.classList.remove('open');
-  document.body.style.overflow = '';
 }
 
 function injectToast() {

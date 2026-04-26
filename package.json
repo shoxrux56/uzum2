@@ -5,12 +5,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node --experimental-sqlite server.js",
-    "dev":   "node --experimental-sqlite --watch server.js"
+    "dev": "node --experimental-sqlite --watch server.js"
   },
   "dependencies": {
-    "cors":    "*",
-    "dotenv":  "*",
+    "cors": "*",
+    "dotenv": "*",
     "express": "*",
-    "multer":  "*"
+    "multer": "*",
+    "pg": "^8.20.0"
   }
 }
