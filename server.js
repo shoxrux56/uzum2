@@ -18,7 +18,7 @@ const { Pool } = require('pg');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(__dirname));
 // ══════════════════════════════════════════════════════════
 //  SECURITY CONFIG
 //  All secrets come from .env — never hard-coded below.
