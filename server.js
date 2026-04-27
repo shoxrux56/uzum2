@@ -18,7 +18,7 @@ const { Pool } = require('pg');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname, 'public')));
 // ══════════════════════════════════════════════════════════
 //  SECURITY CONFIG
 //  All secrets come from .env — never hard-coded below.
@@ -77,10 +77,10 @@ function convertPlaceholder(sql, params) {
 const db = {
   // exec: run raw SQL (can be multiple semicolon-separated statements)
   async exec(sql) {
-    const parts = sql.split(';').map(s => s.trim()).filter(Boolean);
-    for (const p of parts) {
-      await pool.query(p);
-    }
+    if (!sql || !sql.trim()) return;
+    // Send the whole SQL block to Postgres. pg supports semicolons and
+    // dollar-quoted functions/DO blocks; splitting on ';' breaks those.
+    await pool.query(sql);
   },
   // prepare returns an object with run/get/all similar to node:sqlite
   prepare(sql) {
@@ -115,6 +115,8 @@ const db = {
 // Attempt to run the original schema creation SQL for users who rely on it.
 // If the SQL is not valid in Postgres (it may contain sqlite-specific bits)
 // we catch and warn but continue — preserving the original logical flow.
+// Postgres-compatible schema. Uses SERIAL (or IDENTITY) style sequences
+// and epoch timestamps similar to SQLite's strftime('%s','now').
 const initialSchema = `
   -- User profile (single-user pattern)
   CREATE TABLE IF NOT EXISTS users (
@@ -125,22 +127,29 @@ const initialSchema = `
 
   -- Dynamic categories (no hard-coded lists)
   CREATE TABLE IF NOT EXISTS categories (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT    NOT NULL UNIQUE COLLATE NOCASE,
-
-    created_at INTEGER DEFAULT (strftime('%s','now'))
+    id         SERIAL PRIMARY KEY,
+    name       TEXT    NOT NULL,
+    created_at BIGINT  DEFAULT (EXTRACT(EPOCH FROM now())::bigint)
   );
+  -- Ensure case-insensitive uniqueness for category names
+  DO $$ BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_indexes WHERE indexname = 'categories_name_lower_idx'
+    ) THEN
+      CREATE UNIQUE INDEX categories_name_lower_idx ON categories (lower(name));
+    END IF;
+  END $$;
 
   -- Game catalogue
   CREATE TABLE IF NOT EXISTS games_catalog (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          SERIAL PRIMARY KEY,
     title       TEXT    NOT NULL,
     category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
     image_path  TEXT,
     game_url    TEXT    NOT NULL DEFAULT '#',
     likes       INTEGER NOT NULL DEFAULT 25,
-    is_featured INTEGER NOT NULL DEFAULT 0 CHECK(is_featured IN (0,1)),
-    created_at  INTEGER DEFAULT (strftime('%s','now'))
+    is_featured SMALLINT NOT NULL DEFAULT 0 CHECK(is_featured IN (0,1)),
+    created_at  BIGINT  DEFAULT (EXTRACT(EPOCH FROM now())::bigint)
   );
 `;
 
@@ -148,9 +157,9 @@ const initialSchema = `
   try {
     await db.exec(initialSchema);
     try {
-      await db.prepare("INSERT OR IGNORE INTO users (id, name) VALUES (1, 'GameZone User')").run();
+      // Postgres-compatible upsert that does nothing if id=1 already exists
+      await db.prepare("INSERT INTO users (id, name) VALUES (1, 'GameZone User') ON CONFLICT (id) DO NOTHING").run();
     } catch (e) {
-      // Some SQLite-specific statements may fail in Postgres — warn and continue
       console.warn('[DB Init] Warning (ignored):', e.message);
     }
   } catch (e) {
@@ -194,8 +203,16 @@ const gameUpload   = makeUpload(GAME_IMAGES_DIR);
 // ══════════════════════════════════════════════════════════
 
 /** Convert a relative DB path → full public URL */
-const toUrl = (req, p) =>
-  p ? `${req.protocol}://${req.get('host')}/${p}` : null;
+const toUrl = (req, p) => {
+  if (!p) return null;
+  try {
+    const abs = path.join(__dirname, p);
+    if (!fs.existsSync(abs)) return null;
+  } catch (e) {
+    return null;
+  }
+  return `${req.protocol}://${req.get('host')}/${p}`;
+};
 
 /** Safely delete a file from disk without throwing */
 function removeFile(relativePath) {
@@ -360,7 +377,9 @@ app.post('/api/admin/reset', headerAuth, async (req, res) => {
       await db.prepare('DELETE FROM categories').run();
       // sqlite_sequence is SQLite-specific; in Postgres we can try to reset sequences if needed.
       try {
-        await db.prepare(`DELETE FROM sqlite_sequence WHERE name IN ('games_catalog', 'categories')`).run();
+        // Reset Postgres sequences for SERIAL columns (common default names)
+        await db.exec("ALTER SEQUENCE IF EXISTS games_catalog_id_seq RESTART WITH 1");
+        await db.exec("ALTER SEQUENCE IF EXISTS categories_id_seq RESTART WITH 1");
       } catch (e) { /* ignore if not applicable */ }
       await db.exec('COMMIT');
     } catch (err) {
@@ -408,7 +427,10 @@ app.post('/api/admin/reset-all', headerAuth, async (req, res) => {
       await db.exec('BEGIN');
       await db.prepare('DELETE FROM games_catalog').run();
       await db.prepare('DELETE FROM categories').run();
-      try { await db.prepare(`DELETE FROM sqlite_sequence WHERE name IN ('games_catalog','categories')`).run(); } catch (e) {}
+      try {
+        await db.exec("ALTER SEQUENCE IF EXISTS games_catalog_id_seq RESTART WITH 1");
+        await db.exec("ALTER SEQUENCE IF EXISTS categories_id_seq RESTART WITH 1");
+      } catch (e) {}
       await db.exec('COMMIT');
     } catch (err) {
       await db.exec('ROLLBACK');
