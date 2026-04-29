@@ -818,3 +818,12 @@ html.dark .gz-toast {
   transition: opacity .15s, transform .15s;
 }
 .gz-player__blocked-btn:hover { opacity: .85; transform: scale(1.03); }
+
+/* ── Yangi komment animation ────────────────────────────── */
+@keyframes gz-comment-slide {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.gz-comment--new {
+  animation: gz-comment-slide .25s ease forwards;
+}

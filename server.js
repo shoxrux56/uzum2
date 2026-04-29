@@ -609,9 +609,13 @@ app.delete('/api/admin/categories/:id', tokenAuth, async (req, res) => {
 app.get('/api/games', async (req, res) => {
   try {
     const rows = await db.prepare(`
-      SELECT g.*, c.name AS category_name
+      SELECT g.*, c.name AS category_name,
+             COALESCE(cm.cnt, 0) AS comment_count
       FROM   games_catalog g
       LEFT JOIN categories c ON g.category_id = c.id
+      LEFT JOIN (
+        SELECT game_id, COUNT(*) AS cnt FROM comments GROUP BY game_id
+      ) cm ON cm.game_id = g.id
       ORDER  BY g.created_at DESC
     `).all();
     res.json(rows.map(g => ({ ...g, image_url: toUrl(null, g.image_path) })));
@@ -755,38 +759,48 @@ io.on('connection', socket => {
 //  COMMENTS API  —  GET + POST  (real-time broadcast)
 // ══════════════════════════════════════════════════════════
 
-/** GET /api/games/:id/comments — returns all comments for a game */
+/** GET /api/games/:id/comments */
 app.get('/api/games/:id/comments', async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid game ID.' });
   try {
-    const rows = await db.prepare(
-      'SELECT * FROM comments WHERE game_id = ? ORDER BY created_at DESC'
-    ).all(id);
-    res.json(rows);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const result = await pool.query(
+      'SELECT * FROM comments WHERE game_id = $1 ORDER BY created_at DESC',
+      [id]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    console.error('[GET comments]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
-/** POST /api/games/:id/comments — adds a comment and broadcasts to all users */
+/** POST /api/games/:id/comments */
 app.post('/api/games/:id/comments', async (req, res) => {
   const id   = parseInt(req.params.id, 10);
   const text = (req.body.text || '').trim().slice(0, 200);
-  const user = (req.body.user || 'You').trim().slice(0, 50);
+  const user = (req.body.user || 'Foydalanuvchi').trim().slice(0, 50);
   if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid game ID.' });
   if (!text) return res.status(400).json({ error: 'Comment text required.' });
   try {
-    const r = await db.prepare(
-      'INSERT INTO comments (game_id, user_name, text) VALUES (?, ?, ?)'
-    ).run(id, user, text);
-    const comment = await db.prepare('SELECT * FROM comments WHERE id = ?').get(r.lastInsertRowid);
+    const ins = await pool.query(
+      'INSERT INTO comments (game_id, user_name, "text") VALUES ($1, $2, $3) RETURNING *',
+      [id, user, text]
+    );
+    const comment = ins.rows[0];
 
-    // Broadcast to ALL connected clients
-    io.emit('new-comment', { game_id: id, comment });
+    const countRes = await pool.query(
+      'SELECT COUNT(*) AS n FROM comments WHERE game_id = $1',
+      [id]
+    );
+    const count = parseInt(countRes.rows[0]?.n || 0, 10);
 
-    // Return updated comment count for card badge
-    const countRow = await db.prepare('SELECT COUNT(*) AS n FROM comments WHERE game_id = ?').get(id);
-    res.status(201).json({ comment, count: countRow?.n || 0 });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    io.emit('new-comment', { game_id: id, comment, count });
+    res.status(201).json({ comment, count });
+  } catch (e) {
+    console.error('[POST comments]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════
@@ -800,17 +814,23 @@ app.post('/api/games/:id/like', async (req, res) => {
   if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid game ID.' });
   try {
     const delta = action === 'add' ? 1 : -1;
-    await db.prepare(
-      'UPDATE games_catalog SET likes = GREATEST(0, likes + ?) WHERE id = ?'
-    ).run(delta, id);
-    const game = await db.prepare('SELECT id, likes FROM games_catalog WHERE id = ?').get(id);
-    if (!game) return res.status(404).json({ error: 'Game not found.' });
+    await pool.query(
+      'UPDATE games_catalog SET likes = GREATEST(0, likes + $1) WHERE id = $2',
+      [delta, id]
+    );
+    const gameRes = await pool.query(
+      'SELECT id, likes FROM games_catalog WHERE id = $1',
+      [id]
+    );
+    if (!gameRes.rows.length) return res.status(404).json({ error: 'Game not found.' });
 
-    // Broadcast new like count to ALL connected clients
-    io.emit('like-updated', { game_id: id, likes: game.likes });
-
-    res.json({ ok: true, likes: game.likes });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const likes = gameRes.rows[0].likes;
+    io.emit('like-updated', { game_id: id, likes });
+    res.json({ ok: true, likes });
+  } catch (e) {
+    console.error('[POST like]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════

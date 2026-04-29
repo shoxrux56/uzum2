@@ -76,13 +76,13 @@ const GameStore = {
 function normalizeGame(g) {
   return {
     ...g,
-    // buildCard() kutayotgan maydonlar
-    img:      g.image_url  || PLACEHOLDER_IMG,
-    genre:    g.category_name || 'Game',
-    players:  formatEngagementNumbers(g.likes || 0) + ' players',
-    badge:    g.is_featured ? 'top' : null,
-    rating:   g.rating || null,          // DB'da yo'q — null ko'rsatilmaydi
-    comments: g.comments || [],          // localStorage'dan to'ldiriladi
+    img:           g.image_url  || PLACEHOLDER_IMG,
+    genre:         g.category_name || 'Game',
+    players:       formatEngagementNumbers(g.likes || 0) + ' players',
+    badge:         g.is_featured ? 'top' : null,
+    rating:        g.rating || null,
+    comments:      g.comments || [],
+    comment_count: parseInt(g.comment_count || 0, 10),
   };
 }
 
@@ -277,7 +277,7 @@ function heartSVG(filled) {
  */
 function buildCard(game) {
   const liked  = State.likedSet.has(game.id);
-  const cCount = State.getComments(game).length;
+  const cCount = game.comment_count || 0;
 
   const div = document.createElement('div');
   div.className  = 'gz-card';
@@ -502,9 +502,10 @@ function submitComment() {
     .then(data => {
       if (data.comment) {
         input.value = '';
-        // Modal ochiq bo'lsa yangilanadi (socket ham keladi, lekin tezlik uchun)
+        // In-memory game ob'ektini ham yangilaymiz
+        const g = GameStore.getById(modalGameId);
+        if (g) g.comment_count = data.count;
         if (modalGameId !== null) renderModalComments(modalGameId);
-        // Kartalardagi son yangilanadi
         _updateCommentCountUI(modalGameId, data.count);
         showToast('💬 Comment added!');
       } else {
@@ -525,6 +526,29 @@ function _updateCommentCountUI(gameId, count) {
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
       </svg>${formatEngagementNumbers(count)}`;
   });
+}
+
+/** Yangi kommentni modal ro'yxatiga qo'shadi (sahifa yangilanmaydi) */
+function _appendCommentToModal(c) {
+  const list = document.getElementById('gz-comments-list');
+  if (!list) return;
+  // "Hali komment yo'q" xabarini olib tashlaymiz
+  const empty = list.querySelector('.gz-modal__empty');
+  if (empty) empty.remove();
+
+  const el = document.createElement('div');
+  el.className = 'gz-comment gz-comment--new';
+  el.innerHTML = `
+    <div class="gz-comment__avatar" style="background:${c.color || '#FF3B57'}">${(c.user_name || 'U').charAt(0).toUpperCase()}</div>
+    <div class="gz-comment__body">
+      <p class="gz-comment__name">${c.user_name || 'Foydalanuvchi'}</p>
+      <p class="gz-comment__text">${c.text}</p>
+      <p class="gz-comment__time">Hozirgina</p>
+    </div>
+  `;
+  // Eng yangi kommentlar tepaga chiqadi
+  list.insertBefore(el, list.firstChild);
+  list.scrollTop = 0;
 }
 
 // ══════════════════════════════════════════════════════════
@@ -925,31 +949,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Socket.io — real-time yangilanishlar ──────────────
   if (_socket) {
-    // Boshqa foydalanuvchi layk bosdi → UI yangilanadi
+
+    // ❤️ Kimdir layk bosdi → BARCHA ekranlarda son yangilanadi
     _socket.on('like-updated', ({ game_id, likes }) => {
       const game = GameStore.getById(game_id);
-      if (!game) return;
-      game.likes = likes;  // GameStore ni yangilaymiz
+      if (game) game.likes = likes;
       const isLiked = State.likedSet.has(game_id);
-      const display = likes + (isLiked ? 0 : 0); // server haqiqiy son
       _updateLikeUI(game_id, isLiked, likes);
     });
 
-    // Boshqa foydalanuvchi komment yozdi → modal yangilanadi + son oshadi
-    _socket.on('new-comment', ({ game_id, comment }) => {
-      // Agar modal shu o'yin uchun ochiq bo'lsa — ro'yxatni yangilaymiz
+    // 💬 Kimdir komment yozdi → BARCHA ekranlarda komment + son ko'rinadi
+    _socket.on('new-comment', ({ game_id, comment, count }) => {
+      // 1. Karta badge sonini yangilaymiz
+      const game = GameStore.getById(game_id);
+      if (game) game.comment_count = count;
+      _updateCommentCountUI(game_id, count);
+
+      // 2. Agar shu o'yin uchun modal ochiq bo'lsa — yangi kommentni pastga qo'shamiz
       if (modalGameId === game_id) {
-        renderModalComments(game_id);
+        _appendCommentToModal(comment);
       }
-      // Karta sonini yangilash uchun serverdan haqiqiy sonni olamiz
-      fetch(`/api/games/${game_id}/comments`)
-        .then(r => r.json())
-        .then(comments => _updateCommentCountUI(game_id, comments.length))
-        .catch(() => {});
     });
 
-    console.log('[WS] ✅ Socket.io ulandi');
+    console.log('[WS] ✅ Socket.io ulandi — real-time tayyor');
   } else {
-    console.warn('[WS] ⚠️ Socket.io topilmadi — index.html ga <script src="/socket.io/socket.io.js"> qo\'shing');
+    console.warn('[WS] ⚠️ Socket.io topilmadi');
   }
 });
