@@ -295,12 +295,10 @@
       });
     });
 
-    // Card click opens game url
+    // Card click → iframe player
     div.addEventListener('click', () => {
-      const url = game.game_url && game.game_url !== '#'
-        ? game.game_url
-        : null;
-      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      const url = game.game_url && game.game_url !== '#' ? game.game_url : null;
+      if (url) openGamePlayer(url, game.title);
     });
 
     return div;

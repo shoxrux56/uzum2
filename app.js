@@ -22,8 +22,21 @@ const LS_LIKES    = 'gz_likes';
 const LS_COUNTS   = 'gz_counts';
 const LS_COMMENTS = 'gz_comments';
 const LS_SETTINGS = 'gz_settings';
-const LS_CACHE    = 'gz_cache';       // ← yangi: API cache
-const CACHE_TTL   =  60_000;          // 60 soniya — shundan keyin background refresh
+const LS_CACHE    = 'gz_cache';
+const LS_USERNAME = 'gz_username';    // ← foydalanuvchi nomi
+const CACHE_TTL   =  60_000;
+
+// ── Joriy foydalanuvchi nomi ───────────────────────────────
+// Birinchi kirishda "Gamer_XXXX" hosil qilinadi va
+// localStorage da saqlanadi (brauzer unikal identifikator)
+function getCurrentUser() {
+  let name = localStorage.getItem(LS_USERNAME);
+  if (!name) {
+    name = 'Gamer_' + Math.floor(1000 + Math.random() * 9000);
+    localStorage.setItem(LS_USERNAME, name);
+  }
+  return name;
+}
 
 // ── Placeholder image (DB'da rasm yo'q bo'lganda) ─────────
 const PLACEHOLDER_IMG =
@@ -446,28 +459,17 @@ function closeModal() {
 function renderModalComments(id) {
   const list = document.getElementById('gz-comments-list');
   list.innerHTML = '<p class="gz-modal__empty">Yuklanmoqda…</p>';
+  const me = getCurrentUser();
 
   fetch(`/api/games/${id}/comments`)
     .then(r => r.json())
     .then(comments => {
       list.innerHTML = '';
       if (!comments.length) {
-        list.innerHTML = `<p class="gz-modal__empty">No comments yet. Be the first! 🎮</p>`;
+        list.innerHTML = `<p class="gz-modal__empty">Hali komment yo'q. Birinchi bo'l! 🎮</p>`;
         return;
       }
-      comments.forEach(c => {
-        const el = document.createElement('div');
-        el.className = 'gz-comment';
-        el.innerHTML = `
-          <div class="gz-comment__avatar" style="background:${c.color || '#FF3B57'}">${(c.user_name || 'U').charAt(0)}</div>
-          <div class="gz-comment__body">
-            <p class="gz-comment__name">${c.user_name || 'You'}</p>
-            <p class="gz-comment__text">${c.text}</p>
-            <p class="gz-comment__time">${_relativeTime(c.created_at)}</p>
-          </div>
-        `;
-        list.appendChild(el);
-      });
+      comments.forEach(c => _buildCommentEl(c, me, list, 'append'));
       list.scrollTop = list.scrollHeight;
     })
     .catch(() => {
@@ -496,7 +498,7 @@ function submitComment() {
   fetch(`/api/games/${modalGameId}/comments`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ text, user: 'You' })
+    body:    JSON.stringify({ text, user: getCurrentUser() })
   })
     .then(r => r.json())
     .then(data => {
@@ -528,26 +530,51 @@ function _updateCommentCountUI(gameId, count) {
   });
 }
 
+/**
+ * _buildCommentEl(c, me, container, pos)
+ * c        — comment object (user_name, text, color, created_at)
+ * me       — joriy foydalanuvchi nomi
+ * container — ul/div qaysiga qo'shamiz
+ * pos      — 'append' | 'prepend'
+ */
+function _buildCommentEl(c, me, container, pos = 'append') {
+  const isMine = c.user_name === me;
+  const el = document.createElement('div');
+  el.className = 'gz-comment' + (isMine ? ' gz-comment--mine' : '') + ' gz-comment--new';
+
+  const avatar = `<div class="gz-comment__avatar" style="background:${isMine ? '#FF3B57' : (c.color || '#6C63FF')}">${(c.user_name || 'U').charAt(0).toUpperCase()}</div>`;
+  const nameLabel = isMine ? 'Siz' : (c.user_name || 'Foydalanuvchi');
+  const time = _relativeTime(c.created_at);
+
+  el.innerHTML = isMine ? `
+    <div class="gz-comment__body gz-comment__body--mine">
+      <p class="gz-comment__name">Sen</p>
+      <p class="gz-comment__text">${c.text}</p>
+      <p class="gz-comment__time">${time}</p>
+    </div>
+    ${avatar}
+  ` : `
+    ${avatar}
+    <div class="gz-comment__body">
+      <p class="gz-comment__name">${nameLabel}</p>
+      <p class="gz-comment__text">${c.text}</p>
+      <p class="gz-comment__time">${time}</p>
+    </div>
+  `;
+
+  if (pos === 'prepend') container.insertBefore(el, container.firstChild);
+  else container.appendChild(el);
+  return el;
+}
+
 /** Yangi kommentni modal ro'yxatiga qo'shadi (sahifa yangilanmaydi) */
 function _appendCommentToModal(c) {
   const list = document.getElementById('gz-comments-list');
   if (!list) return;
-  // "Hali komment yo'q" xabarini olib tashlaymiz
   const empty = list.querySelector('.gz-modal__empty');
   if (empty) empty.remove();
-
-  const el = document.createElement('div');
-  el.className = 'gz-comment gz-comment--new';
-  el.innerHTML = `
-    <div class="gz-comment__avatar" style="background:${c.color || '#FF3B57'}">${(c.user_name || 'U').charAt(0).toUpperCase()}</div>
-    <div class="gz-comment__body">
-      <p class="gz-comment__name">${c.user_name || 'Foydalanuvchi'}</p>
-      <p class="gz-comment__text">${c.text}</p>
-      <p class="gz-comment__time">Hozirgina</p>
-    </div>
-  `;
-  // Eng yangi kommentlar tepaga chiqadi
-  list.insertBefore(el, list.firstChild);
+  const me = getCurrentUser();
+  _buildCommentEl(c, me, list, 'prepend');
   list.scrollTop = 0;
 }
 
