@@ -211,9 +211,8 @@
   }
 
   function buildLibraryCard(game) {
-    // Build a card similar to buildCard() but with a rating widget.
-    const liked  = State.likedSet.has(game.id);
-    const cCount = State.getComments(game).length;
+    const liked     = State.likedSet.has(game.id);
+    const cCount    = game.comment_count || 0;
     const curRating = getRatingFor(game.id) || 0;
 
     const div = document.createElement('div');
