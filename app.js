@@ -458,7 +458,7 @@ function closeModal() {
 
 function renderModalComments(id) {
   const list = document.getElementById('gz-comments-list');
-  list.innerHTML = '<p class="gz-modal__empty">Loading…</p>';
+  list.innerHTML = '<p class="gz-modal__empty">Yuklanmoqda…</p>';
   const me = getCurrentUser();
 
   fetch(`/api/games/${id}/comments`)
@@ -466,14 +466,14 @@ function renderModalComments(id) {
     .then(comments => {
       list.innerHTML = '';
       if (!comments.length) {
-        list.innerHTML = `<p class="gz-modal__empty">No comments yet. Be the first! 🎮</p>`;
+        list.innerHTML = `<p class="gz-modal__empty">Hali komment yo'q. Birinchi bo'l! 🎮</p>`;
         return;
       }
       comments.forEach(c => _buildCommentEl(c, me, list, 'append'));
       list.scrollTop = list.scrollHeight;
     })
     .catch(() => {
-      list.innerHTML = `<p class="gz-modal__empty">Failed to load comments ❌</p>`;
+      list.innerHTML = `<p class="gz-modal__empty">Kommentlarni yuklashda xatolik ❌</p>`;
     });
 }
 
@@ -539,16 +539,16 @@ function _updateCommentCountUI(gameId, count) {
  */
 function _buildCommentEl(c, me, container, pos = 'append') {
   const isMine = c.user_name === me;
-
+  const el = document.createElement('div');
   el.className = 'gz-comment' + (isMine ? ' gz-comment--mine' : '') + ' gz-comment--new';
 
   const avatar = `<div class="gz-comment__avatar" style="background:${isMine ? '#FF3B57' : (c.color || '#6C63FF')}">${(c.user_name || 'U').charAt(0).toUpperCase()}</div>`;
-  const nameLabel = isMine ? 'You' : (c.user_name || 'Unknown');
+  const nameLabel = isMine ? 'Siz' : (c.user_name || 'Foydalanuvchi');
   const time = _relativeTime(c.created_at);
 
   el.innerHTML = isMine ? `
     <div class="gz-comment__body gz-comment__body--mine">
-      <p class="gz-comment__name">You</p>
+      <p class="gz-comment__name">Sen</p>
       <p class="gz-comment__text">${c.text}</p>
       <p class="gz-comment__time">${time}</p>
     </div>
