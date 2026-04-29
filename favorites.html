@@ -14,6 +14,8 @@
       padding: 2px 10px; border-radius: 999px; margin-left: 8px;
     }
   </style>
+  <link rel="preload" href="app.js" as="script">
+  <style>body{opacity:0;animation:gz-fadein .18s ease forwards}@keyframes gz-fadein{to{opacity:1}}</style>
 </head>
 <body>
 
@@ -79,6 +81,7 @@
     </a>
   </nav>
 
+  <script src="/socket.io/socket.io.js"></script>
   <script src="app.js"></script>
   <script>
   'use strict';

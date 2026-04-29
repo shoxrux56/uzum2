@@ -8,14 +8,22 @@
    • GameStore             — yagona runtime manbai (API'dan)
    • fetchData()           — sahifa yuklanganda API chaqiradi
    • BroadcastChannel      — tab-lar orasida sinxronizatsiya
+   • Socket.io             — real-time like/comment sync (YANGI)
 ═══════════════════════════════════════════════════════════ */
 'use strict';
+
+// ── Socket.io — real-time sinxronizatsiya ─────────────────
+// Socket.io skripti index.html da yuklangan bo'lishi kerak:
+//   <script src="/socket.io/socket.io.js"></script>
+const _socket = (typeof io !== 'undefined') ? io() : null;
 
 // ── LocalStorage keys ─────────────────────────────────────
 const LS_LIKES    = 'gz_likes';
 const LS_COUNTS   = 'gz_counts';
 const LS_COMMENTS = 'gz_comments';
 const LS_SETTINGS = 'gz_settings';
+const LS_CACHE    = 'gz_cache';       // ← yangi: API cache
+const CACHE_TTL   =  60_000;          // 60 soniya — shundan keyin background refresh
 
 // ── Placeholder image (DB'da rasm yo'q bo'lganda) ─────────
 const PLACEHOLDER_IMG =
@@ -88,22 +96,62 @@ function normalizeGame(g) {
 //    await fetchData();
 //    renderLibrary();   // yoki renderHome(), renderFavorites()
 // ══════════════════════════════════════════════════════════
-async function fetchData() {
+// ══════════════════════════════════════════════════════════
+//  Stale-While-Revalidate cache
+//  1. in-memory bor → 0ms qaytadi + eski bo'lsa background refresh
+//  2. localStorage bor → darhol render + background refresh
+//  3. hech narsa yo'q → await fetch (faqat birinchi marta)
+// ══════════════════════════════════════════════════════════
+let _memCache = null;
+
+async function fetchData({ background = false } = {}) {
+  // ── in-memory (tab yopilmaguncha eng tez) ─────────────
+  if (_memCache && !background) {
+    GameStore.games      = _memCache.games;
+    GameStore.categories = _memCache.categories;
+    if (Date.now() - _memCache.ts > CACHE_TTL)
+      fetchData({ background: true }).catch(() => {});
+    return true;
+  }
+
+  // ── localStorage cache ─────────────────────────────────
+  if (!background) {
+    try {
+      const raw = localStorage.getItem(LS_CACHE);
+      if (raw) {
+        const s = JSON.parse(raw);
+        if (s?.games && s?.categories) {
+          GameStore.games      = s.games.map(normalizeGame);
+          GameStore.categories = s.categories;
+          _memCache = { games: GameStore.games, categories: GameStore.categories, ts: s.ts || 0 };
+          fetchData({ background: true }).catch(() => {}); // har doim background refresh
+          return true;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // ── Haqiqiy API so'rovi ────────────────────────────────
   try {
-    const [gamesRes, catsRes] = await Promise.all([
+    const [gR, cR] = await Promise.all([
       fetch('/api/games'),
       fetch('/api/categories')
     ]);
+    if (!gR.ok) throw new Error(`Games: ${gR.status}`);
+    if (!cR.ok) throw new Error(`Cats: ${cR.status}`);
 
-    if (!gamesRes.ok) throw new Error(`Games API: ${gamesRes.status}`);
-    if (!catsRes.ok)  throw new Error(`Categories API: ${catsRes.status}`);
-
-    const rawGames = await gamesRes.json();
-    const rawCats  = await catsRes.json();
+    const rawGames = await gR.json();
+    const rawCats  = await cR.json();
 
     GameStore.games      = rawGames.map(normalizeGame);
     GameStore.categories = rawCats;
+    _memCache = { games: GameStore.games, categories: GameStore.categories, ts: Date.now() };
 
+    try {
+      localStorage.setItem(LS_CACHE, JSON.stringify({ games: rawGames, categories: rawCats, ts: Date.now() }));
+    } catch (_) {}
+
+    if (background) SyncBus.emit('GAMES_UPDATED');
     return true;
   } catch (err) {
     console.error('[fetchData]', err.message);
@@ -240,6 +288,7 @@ function buildCard(game) {
   div.innerHTML = `
     <div class="gz-card__img-wrap">
       <img class="gz-card__img" src="${game.img || PLACEHOLDER_IMG}"
+           loading="lazy" decoding="async"
            alt="${game.title}" loading="lazy"
            onerror="this.src='${PLACEHOLDER_IMG}'" />
       ${badgeHTML(game.badge)}
@@ -283,14 +332,10 @@ function buildCard(game) {
     openModal(game.id);
   });
 
-  // Karta bosilsa → o'yin URL ga o'tadi
+  // Karta bosilsa → o'yin iframe'da ochiladi
   div.addEventListener('click', () => {
-    const url = game.game_url && game.game_url !== '#'
-      ? game.game_url
-      : null;
-    if (url) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
+    const url = game.game_url && game.game_url !== '#' ? game.game_url : null;
+    if (url) openGamePlayer(url, game.title);
   });
 
   return div;
@@ -306,57 +351,65 @@ function buildCard(game) {
 //  dan hisoblash muhim — aks holda har bosishda ortib ketadi.
 // ══════════════════════════════════════════════════════════
 function toggleLike(id, cardEl) {
-  // prevent re-entrancy / duplicate rapid clicks
   if (PENDING_LIKES.has(id)) return;
   PENDING_LIKES.add(id);
-  const liked = State.likedSet;
-  const counts = State.counts;
 
-  const game = GameStore.getById(id);
-  if (!game) return;
+  const game   = GameStore.getById(id);
+  if (!game) { PENDING_LIKES.delete(id); return; }
 
-  // Bazaviy qiymat: GameStore'dagi original likes (DB dan kelgan)
-  // localStorage'dagi counts[] emas — u faqat UI uchun
-  const baseLikes = game.likes || 0;
+  const liked      = State.likedSet;
+  const isNowLiked = !liked.has(id);
+  const action     = isNowLiked ? 'add' : 'remove';
 
-  if (liked.has(id)) {
-    // Like olib tashlanmoqda → bazaviy qiymatga qaytish
-    liked.delete(id);
-    // compute new count based on liked set
-    const newCountRemoved = baseLikes;
-    counts[id] = newCountRemoved;
-    showToast('💔 Removed from Favourites');
-  } else {
-    // Like bosilmoqda → bazaviy + 1
-    liked.add(id);
-    const newCountAdded = baseLikes + 1;
-    counts[id] = newCountAdded;
-    showToast('❤️ Added to Favourites');
-  }
-
+  // UI ni zudlik bilan yangilaymiz (optimistic update)
+  if (isNowLiked) { liked.add(id); } else { liked.delete(id); }
   State.saveLikedSet(liked);
-  State.saveCounts(counts);
 
-  if (cardEl) {
-    const btn        = cardEl.querySelector('[data-action="like"]');
-    const isNowLiked = liked.has(id);
-    // Compute a single source of truth for display: baseLikes + (isNowLiked?1:0)
-    const displayCount = (game.likes || 0) + (isNowLiked ? 1 : 0);
-    counts[id] = displayCount;
-    State.saveCounts(counts);
-    btn.innerHTML    = `${heartSVG(isNowLiked)}<span class="like-count">${formatEngagementNumbers(displayCount)}</span>`;
-    btn.classList.toggle('liked', isNowLiked);
-    btn.querySelector('svg').classList.add('heart-pop');
-    btn.querySelector('svg').addEventListener('animationend',
-      () => btn.querySelector('svg')?.classList.remove('heart-pop'), { once: true });
+  const optimisticCount = (game.likes || 0) + (isNowLiked ? 1 : 0);
+  _updateLikeUI(id, isNowLiked, optimisticCount);
+  showToast(isNowLiked ? '❤️ Added to Favourites' : '💔 Removed from Favourites');
 
-  // players/genre meta removed from card UI — no players text to update
-  }
+  // Serverga yuboramiz — real sonni olamiz
+  fetch(`/api/games/${id}/like`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.likes !== undefined) {
+        // DB dagi haqiqiy sonni game.likes ga yozamiz
+        game.likes = data.likes;
+        // liked holat saqlanadi, UI ni DB qiymati bilan sinxronlaymiz
+        _updateLikeUI(id, isNowLiked, data.likes + (isNowLiked ? 0 : 0));
+      }
+    })
+    .catch(() => {
+      // Xato bo'lsa — optimistic update ni orqaga qaytaramiz
+      if (isNowLiked) { liked.delete(id); } else { liked.add(id); }
+      State.saveLikedSet(liked);
+      _updateLikeUI(id, !isNowLiked, game.likes || 0);
+      showToast('❌ Xatolik yuz berdi');
+    })
+    .finally(() => {
+      if (typeof renderFavorites === 'function') renderFavorites();
+      setTimeout(() => PENDING_LIKES.delete(id), 420);
+    });
+}
 
-  if (typeof renderFavorites === 'function') renderFavorites();
-
-  // release lock after short debounce window
-  setTimeout(() => PENDING_LIKES.delete(id), 420);
+/** Like UI ni yangilash — ichki yordamchi */
+function _updateLikeUI(id, isLiked, count) {
+  document.querySelectorAll(`.gz-card[data-id="${id}"]`).forEach(cardEl => {
+    const btn = cardEl.querySelector('[data-action="like"]');
+    if (!btn) return;
+    btn.innerHTML = `${heartSVG(isLiked)}<span class="like-count">${formatEngagementNumbers(count)}</span>`;
+    btn.classList.toggle('liked', isLiked);
+    const svg = btn.querySelector('svg');
+    if (svg) {
+      svg.classList.add('heart-pop');
+      svg.addEventListener('animationend', () => svg.classList.remove('heart-pop'), { once: true });
+    }
+  });
 }
 
 // ══════════════════════════════════════════════════════════
@@ -391,31 +444,45 @@ function closeModal() {
 }
 
 function renderModalComments(id) {
-  // ← GAMES_DATA.find() o'rniga GameStore.getById()
-  const game     = GameStore.getById(id);
-  const comments = game ? State.getComments(game) : [];
-  const list     = document.getElementById('gz-comments-list');
-  list.innerHTML  = '';
+  const list = document.getElementById('gz-comments-list');
+  list.innerHTML = '<p class="gz-modal__empty">Yuklanmoqda…</p>';
 
-  if (!comments.length) {
-    list.innerHTML = `<p class="gz-modal__empty">No comments yet. Be the first! 🎮</p>`;
-    return;
-  }
+  fetch(`/api/games/${id}/comments`)
+    .then(r => r.json())
+    .then(comments => {
+      list.innerHTML = '';
+      if (!comments.length) {
+        list.innerHTML = `<p class="gz-modal__empty">No comments yet. Be the first! 🎮</p>`;
+        return;
+      }
+      comments.forEach(c => {
+        const el = document.createElement('div');
+        el.className = 'gz-comment';
+        el.innerHTML = `
+          <div class="gz-comment__avatar" style="background:${c.color || '#FF3B57'}">${(c.user_name || 'U').charAt(0)}</div>
+          <div class="gz-comment__body">
+            <p class="gz-comment__name">${c.user_name || 'You'}</p>
+            <p class="gz-comment__text">${c.text}</p>
+            <p class="gz-comment__time">${_relativeTime(c.created_at)}</p>
+          </div>
+        `;
+        list.appendChild(el);
+      });
+      list.scrollTop = list.scrollHeight;
+    })
+    .catch(() => {
+      list.innerHTML = `<p class="gz-modal__empty">Kommentlarni yuklashda xatolik ❌</p>`;
+    });
+}
 
-  comments.forEach(c => {
-    const el = document.createElement('div');
-    el.className = 'gz-comment';
-    el.innerHTML = `
-      <div class="gz-comment__avatar" style="background:${c.color}">${c.user.charAt(0)}</div>
-      <div class="gz-comment__body">
-        <p class="gz-comment__name">${c.user}</p>
-        <p class="gz-comment__text">${c.text}</p>
-        <p class="gz-comment__time">${c.time}</p>
-      </div>
-    `;
-    list.appendChild(el);
-  });
-  list.scrollTop = list.scrollHeight;
+/** Unix timestamp → "just now / 2 min ago / ..." */
+function _relativeTime(ts) {
+  if (!ts) return 'just now';
+  const sec = Math.floor(Date.now() / 1000 - Number(ts));
+  if (sec < 60)  return 'just now';
+  if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} hr ago`;
+  return `${Math.floor(sec / 86400)} day(s) ago`;
 }
 
 function submitComment() {
@@ -423,34 +490,41 @@ function submitComment() {
   const text  = input.value.trim();
   if (!text || modalGameId === null) return;
 
-  // ← GAMES_DATA.find() o'rniga GameStore.getById()
-  const game = GameStore.getById(modalGameId);
-  const all  = State.comments;
-  const cur  = all[modalGameId] !== undefined ? all[modalGameId] : [...(game?.comments || [])];
+  const btn = document.getElementById('gz-send-btn');
+  if (btn) btn.disabled = true;
 
-  const colors = ['#FF3B57', '#6C63FF', '#FF8C00', '#00B894', '#0984E3'];
-  cur.unshift({
-    user:  'You',
-    text,
-    time:  'just now',
-    color: '#FF3B57'
-  });
-  all[modalGameId] = cur;
-  State.saveComments(all);
+  fetch(`/api/games/${modalGameId}/comments`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ text, user: 'You' })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.comment) {
+        input.value = '';
+        // Modal ochiq bo'lsa yangilanadi (socket ham keladi, lekin tezlik uchun)
+        if (modalGameId !== null) renderModalComments(modalGameId);
+        // Kartalardagi son yangilanadi
+        _updateCommentCountUI(modalGameId, data.count);
+        showToast('💬 Comment added!');
+      } else {
+        showToast('❌ ' + (data.error || 'Xatolik'));
+      }
+    })
+    .catch(() => showToast('❌ Server bilan bog\'lanib bo\'lmadi'))
+    .finally(() => { if (btn) btn.disabled = false; });
+}
 
-  const card = document.querySelector(`.gz-card[data-id="${modalGameId}"]`);
-  if (card) {
+/** Karta(lar)dagi komment sonini yangilash */
+function _updateCommentCountUI(gameId, count) {
+  document.querySelectorAll(`.gz-card[data-id="${gameId}"]`).forEach(card => {
     const cBtn = card.querySelector('[data-action="comment"]');
     if (cBtn) cBtn.innerHTML = `
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-      </svg>${cur.length}`;
-  }
-
-  input.value = '';
-  renderModalComments(modalGameId);
-  showToast('💬 Comment added!');
+      </svg>${formatEngagementNumbers(count)}`;
+  });
 }
 
 // ══════════════════════════════════════════════════════════
@@ -532,9 +606,9 @@ const Carousel = {
         <img src="${g.image_url || PLACEHOLDER_IMG}" alt="${g.title}" loading="lazy" />
         <div class="gz-carousel__overlay"></div>
         <div class="gz-carousel__info">
-          <span class="gz-carousel__tag">⭐ Featured</span>
+          <span class="gz-carousel__tag">⚡ Muharrir Tanlovi</span>
           <h3 class="gz-carousel__title">${g.title}</h3>
-          <a href="${g.game_url || '#'}" class="gz-carousel__play" target="_blank">▶ Play Now</a>
+          <button class="gz-carousel__play" onclick="openGamePlayer('${g.game_url}','${g.title.replace(/'/g,"\\'")}')">▶ Hozir o'yna</button>
         </div>`;
       track.appendChild(slide);
       const dot = document.createElement('button');
@@ -644,6 +718,8 @@ function clearGameData() {
   localStorage.removeItem(LS_LIKES);
   localStorage.removeItem(LS_COUNTS);
   localStorage.removeItem(LS_COMMENTS);
+  localStorage.removeItem(LS_CACHE);
+  _memCache = null;
   showToast('🗑️ Likes and comments cleared.');
   return true;
 }
@@ -655,7 +731,146 @@ function setActiveNav() {
   const page = window.location.pathname.split('/').pop() || 'index.html';
   document.querySelectorAll('.gz-nav__item').forEach(a => {
     a.classList.toggle('active', a.getAttribute('href') === page);
+
+    // Hover qilinganda keyingi sahifani oldindan yuklaymiz (prefetch)
+    a.addEventListener('mouseenter', () => {
+      const href = a.getAttribute('href');
+      if (href && href !== page && !document.querySelector(`link[rel="prefetch"][href="${href}"]`)) {
+        const lnk = document.createElement('link');
+        lnk.rel  = 'prefetch';
+        lnk.href = href;
+        document.head.appendChild(lnk);
+      }
+    }, { once: true });
   });
+}
+
+// ══════════════════════════════════════════════════════════
+//  Game Player  —  o'yinni sayt ichida iframe'da ochadi
+// ══════════════════════════════════════════════════════════
+function injectGamePlayer() {
+  if (document.getElementById('gz-player-overlay')) return;
+  const el = document.createElement('div');
+  el.id = 'gz-player-overlay';
+  el.innerHTML = `
+    <div class="gz-player">
+      <div class="gz-player__bar">
+        <span class="gz-player__title" id="gz-player-title"></span>
+        <div class="gz-player__actions">
+          <button class="gz-player__fs" id="gz-player-fs" title="To'liq ekran">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+            </svg>
+          </button>
+          <button class="gz-player__close" id="gz-player-close" title="Yopish">✕</button>
+        </div>
+      </div>
+
+      <!-- Iframe blok xabar (default yashirin) -->
+      <div class="gz-player__blocked" id="gz-player-blocked" style="display:none">
+        <div class="gz-player__blocked-icon">🚫</div>
+        <p class="gz-player__blocked-title">O'yin bu yerda ochilmaydi</p>
+        <p class="gz-player__blocked-desc">Bu sayt iframe ichida ko'rsatishni taqiqlagan.<br>Yangi tabda ochib o'ynashingiz mumkin.</p>
+        <button class="gz-player__blocked-btn" id="gz-player-newtab">
+          ↗ Yangi tabda ochish
+        </button>
+      </div>
+
+      <iframe id="gz-player-frame" src="" allowfullscreen
+        allow="fullscreen; autoplay; gamepad; pointer-lock; screen-wake-lock"></iframe>
+    </div>
+  `;
+  document.body.appendChild(el);
+
+  document.getElementById('gz-player-close').addEventListener('click', closeGamePlayer);
+  el.addEventListener('click', e => { if (e.target === el) closeGamePlayer(); });
+
+  // To'liq ekran tugmasi
+  document.getElementById('gz-player-fs').addEventListener('click', () => {
+    const frame = document.getElementById('gz-player-frame');
+    if (frame.requestFullscreen)            frame.requestFullscreen();
+    else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
+  });
+
+  // ESC bilan yopish
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeGamePlayer();
+  });
+
+  // Iframe yuklanganda X-Frame-Options tekshiramiz
+  // (blocked bo'lsa about:blank yoki xato keladi)
+  const frame = document.getElementById('gz-player-frame');
+  let _checkTimer = null;
+
+  frame.addEventListener('load', () => {
+    clearTimeout(_checkTimer);
+    // Agar src bo'sh bo'lsa — tekshirma
+    if (!frame.src || frame.src === window.location.href) return;
+    try {
+      // Agar cross-origin blok bo'lsa — contentDocument null yoki xato beradi
+      const doc = frame.contentDocument;
+      // doc null bo'lsa — BLOK (same-origin policy)
+      if (!doc || !doc.body) {
+        _showBlocked();
+      } else if (doc.body.innerHTML.trim() === '') {
+        _showBlocked();
+      }
+    } catch (e) {
+      // SecurityError — cross-origin, lekin yuklangan (OK)
+      // Hech narsa qilmaymiz
+    }
+  });
+
+  // 6 soniyadan keyin hali ham bo'sh bo'lsa — blok deb hisoblaymiz
+  frame._startCheck = (url) => {
+    clearTimeout(_checkTimer);
+    _checkTimer = setTimeout(() => {
+      try {
+        const doc = frame.contentDocument;
+        if (!doc || doc.body.innerHTML.trim() === '') _showBlocked();
+      } catch (_) { /* cross-origin OK */ }
+    }, 6000);
+  };
+
+  function _showBlocked() {
+    frame.style.display = 'none';
+    document.getElementById('gz-player-blocked').style.display = 'flex';
+    document.getElementById('gz-player-fs').style.display = 'none';
+  }
+}
+
+function openGamePlayer(url, title) {
+  if (!url || url === '#') return;
+  injectGamePlayer();
+  const frame   = document.getElementById('gz-player-frame');
+  const blocked = document.getElementById('gz-player-blocked');
+  const fsBtn   = document.getElementById('gz-player-fs');
+
+  // Reset
+  frame.style.display   = '';
+  blocked.style.display = 'none';
+  fsBtn.style.display   = '';
+
+  document.getElementById('gz-player-title').textContent = title || '';
+  frame.src = url;
+  if (frame._startCheck) frame._startCheck(url);
+
+  // "Yangi tabda" tugmasi URL ni biladi
+  document.getElementById('gz-player-newtab').onclick = () => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    closeGamePlayer();
+  };
+
+  document.getElementById('gz-player-overlay').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeGamePlayer() {
+  const ov = document.getElementById('gz-player-overlay');
+  if (!ov) return;
+  ov.classList.remove('active');
+  document.getElementById('gz-player-frame').src = '';
+  document.body.style.overflow = '';
 }
 
 function injectModal() {
@@ -707,4 +922,34 @@ document.addEventListener('DOMContentLoaded', () => {
   setActiveNav();
   document.querySelectorAll('[data-action="bell"]').forEach(b =>
     b.addEventListener('click', onBellClick));
+
+  // ── Socket.io — real-time yangilanishlar ──────────────
+  if (_socket) {
+    // Boshqa foydalanuvchi layk bosdi → UI yangilanadi
+    _socket.on('like-updated', ({ game_id, likes }) => {
+      const game = GameStore.getById(game_id);
+      if (!game) return;
+      game.likes = likes;  // GameStore ni yangilaymiz
+      const isLiked = State.likedSet.has(game_id);
+      const display = likes + (isLiked ? 0 : 0); // server haqiqiy son
+      _updateLikeUI(game_id, isLiked, likes);
+    });
+
+    // Boshqa foydalanuvchi komment yozdi → modal yangilanadi + son oshadi
+    _socket.on('new-comment', ({ game_id, comment }) => {
+      // Agar modal shu o'yin uchun ochiq bo'lsa — ro'yxatni yangilaymiz
+      if (modalGameId === game_id) {
+        renderModalComments(game_id);
+      }
+      // Karta sonini yangilash uchun serverdan haqiqiy sonni olamiz
+      fetch(`/api/games/${game_id}/comments`)
+        .then(r => r.json())
+        .then(comments => _updateCommentCountUI(game_id, comments.length))
+        .catch(() => {});
+    });
+
+    console.log('[WS] ✅ Socket.io ulandi');
+  } else {
+    console.warn('[WS] ⚠️ Socket.io topilmadi — index.html ga <script src="/socket.io/socket.io.js"> qo\'shing');
+  }
 });

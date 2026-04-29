@@ -9,6 +9,8 @@
 require('dotenv').config();
 
 const express  = require('express');
+const http     = require('http');
+const { Server: SocketServer } = require('socket.io');
 const multer   = require('multer');
 const path     = require('path');
 const fs       = require('fs');
@@ -16,8 +18,10 @@ const cors     = require('cors');
 const crypto   = require('crypto');
 const { Pool } = require('pg');
 
-const app  = express();
-const PORT = process.env.PORT || 3000;
+const app    = express();
+const server = http.createServer(app);
+const io     = new SocketServer(server);
+const PORT   = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
 // ══════════════════════════════════════════════════════════
 //  SECURITY CONFIG
@@ -151,6 +155,16 @@ const initialSchema = `
     is_featured SMALLINT NOT NULL DEFAULT 0 CHECK(is_featured IN (0,1)),
     created_at  BIGINT  DEFAULT (EXTRACT(EPOCH FROM now())::bigint)
   );
+
+  -- Comments (real-time, shared across all users)
+  CREATE TABLE IF NOT EXISTS comments (
+    id         SERIAL PRIMARY KEY,
+    game_id    INTEGER NOT NULL REFERENCES games_catalog(id) ON DELETE CASCADE,
+    user_name  TEXT    NOT NULL DEFAULT 'You',
+    text       TEXT    NOT NULL,
+    color      TEXT    NOT NULL DEFAULT '#FF3B57',
+    created_at BIGINT  DEFAULT (EXTRACT(EPOCH FROM now())::bigint)
+  );
 `;
 
 (async function initDb() {
@@ -202,8 +216,8 @@ const gameUpload   = makeUpload(GAME_IMAGES_DIR);
 //  HELPERS
 // ══════════════════════════════════════════════════════════
 
-/** Convert a relative DB path → full public URL */
-const toUrl = (req, p) => {
+/** Convert a relative DB path → relative public URL (works for all users, not just localhost) */
+const toUrl = (_req, p) => {
   if (!p) return null;
   try {
     const abs = path.join(__dirname, p);
@@ -211,7 +225,8 @@ const toUrl = (req, p) => {
   } catch (e) {
     return null;
   }
-  return `${req.protocol}://${req.get('host')}/${p}`;
+  // Relative URL — har qanday domendan ishlaydi
+  return '/' + p.replace(/\\/g, '/');
 };
 
 /** Safely delete a file from disk without throwing */
@@ -599,7 +614,7 @@ app.get('/api/games', async (req, res) => {
       LEFT JOIN categories c ON g.category_id = c.id
       ORDER  BY g.created_at DESC
     `).all();
-    res.json(rows.map(g => ({ ...g, image_url: toUrl(req, g.image_path) })));
+    res.json(rows.map(g => ({ ...g, image_url: toUrl(null, g.image_path) })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -613,7 +628,7 @@ app.get('/api/featured', async (req, res) => {
       ORDER  BY g.created_at DESC
       LIMIT  10
     `).all();
-    res.json(rows.map(g => ({ ...g, image_url: toUrl(req, g.image_path) })));
+    res.json(rows.map(g => ({ ...g, image_url: toUrl(null, g.image_path) })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -644,7 +659,7 @@ app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), async (req, 
       VALUES (?, ?, ?, ?, ?)
     `).run(title, category_id, image_path, game_url, is_featured);
 
-    res.status(201).json({ id: r.lastInsertRowid, title, image_url: toUrl(req, image_path), is_featured });
+    res.status(201).json({ id: r.lastInsertRowid, title, image_url: toUrl(null, image_path), is_featured });
   } catch (e) {
     if (req.file) { try { fs.unlinkSync(req.file.path); } catch {} }
     res.status(500).json({ error: e.message });
@@ -687,7 +702,7 @@ app.get('/api/profile', async (req, res) => {
   try {
     const user = await db.prepare('SELECT * FROM users WHERE id = 1').get();
     if (!user) return res.status(404).json({ error: 'User not found.' });
-    res.json({ id: user.id, name: user.name, image_url: toUrl(req, user.profile_image_path) });
+    res.json({ id: user.id, name: user.name, image_url: toUrl(null, user.profile_image_path) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -709,7 +724,7 @@ app.post('/api/profile', avatarUpload.single('image'), async (req, res) => {
 
     await db.prepare('UPDATE users SET name = ?, profile_image_path = ? WHERE id = 1').run(name, imagePath);
 
-    res.json({ message: 'Profile updated.', name, image_url: toUrl(req, imagePath) });
+    res.json({ message: 'Profile updated.', name, image_url: toUrl(null, imagePath) });
   } catch (e) {
     if (req.file) { try { fs.unlinkSync(req.file.path); } catch {} }
     res.status(500).json({ error: e.message });
@@ -723,6 +738,78 @@ app.delete('/api/profile/image', async (_req, res) => {
     removeFile(user?.profile_image_path);
     await db.prepare('UPDATE users SET profile_image_path = NULL WHERE id = 1').run();
     res.json({ ok: true, message: 'Profile image removed.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════
+//  WEBSOCKET — real-time like/comment sync
+// ══════════════════════════════════════════════════════════
+io.on('connection', socket => {
+  console.log(`[WS] ✅ Client connected: ${socket.id}`);
+  socket.on('disconnect', () => {
+    console.log(`[WS] ❌ Client disconnected: ${socket.id}`);
+  });
+});
+
+// ══════════════════════════════════════════════════════════
+//  COMMENTS API  —  GET + POST  (real-time broadcast)
+// ══════════════════════════════════════════════════════════
+
+/** GET /api/games/:id/comments — returns all comments for a game */
+app.get('/api/games/:id/comments', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid game ID.' });
+  try {
+    const rows = await db.prepare(
+      'SELECT * FROM comments WHERE game_id = ? ORDER BY created_at DESC'
+    ).all(id);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/** POST /api/games/:id/comments — adds a comment and broadcasts to all users */
+app.post('/api/games/:id/comments', async (req, res) => {
+  const id   = parseInt(req.params.id, 10);
+  const text = (req.body.text || '').trim().slice(0, 200);
+  const user = (req.body.user || 'You').trim().slice(0, 50);
+  if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid game ID.' });
+  if (!text) return res.status(400).json({ error: 'Comment text required.' });
+  try {
+    const r = await db.prepare(
+      'INSERT INTO comments (game_id, user_name, text) VALUES (?, ?, ?)'
+    ).run(id, user, text);
+    const comment = await db.prepare('SELECT * FROM comments WHERE id = ?').get(r.lastInsertRowid);
+
+    // Broadcast to ALL connected clients
+    io.emit('new-comment', { game_id: id, comment });
+
+    // Return updated comment count for card badge
+    const countRow = await db.prepare('SELECT COUNT(*) AS n FROM comments WHERE game_id = ?').get(id);
+    res.status(201).json({ comment, count: countRow?.n || 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════
+//  LIKES API  —  POST toggle  (real-time broadcast)
+// ══════════════════════════════════════════════════════════
+
+/** POST /api/games/:id/like  body: { action: 'add'|'remove' } */
+app.post('/api/games/:id/like', async (req, res) => {
+  const id     = parseInt(req.params.id, 10);
+  const action = req.body.action === 'remove' ? 'remove' : 'add';
+  if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid game ID.' });
+  try {
+    const delta = action === 'add' ? 1 : -1;
+    await db.prepare(
+      'UPDATE games_catalog SET likes = GREATEST(0, likes + ?) WHERE id = ?'
+    ).run(delta, id);
+    const game = await db.prepare('SELECT id, likes FROM games_catalog WHERE id = ?').get(id);
+    if (!game) return res.status(404).json({ error: 'Game not found.' });
+
+    // Broadcast new like count to ALL connected clients
+    io.emit('like-updated', { game_id: id, likes: game.likes });
+
+    res.json({ ok: true, likes: game.likes });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -750,7 +837,7 @@ app.use((err, _req, res, _next) => {
 // ══════════════════════════════════════════════════════════
 //  START
 // ══════════════════════════════════════════════════════════
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`\n✅  GameZone v4.0 → http://localhost:${PORT}`);
   console.log(`   🔐  Admin panel → http://localhost:${PORT}/admin`);
   console.log(`   ⚠️   Never expose ADMIN_PASSWORD in logs or commits\n`);
