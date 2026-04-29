@@ -15,6 +15,7 @@ const multer   = require('multer');
 const path     = require('path');
 const fs       = require('fs');
 const cors     = require('cors');
+const compression = require('compression');
 const crypto   = require('crypto');
 const { Pool } = require('pg');
 
@@ -50,11 +51,34 @@ const GAME_IMAGES_DIR = path.join(__dirname, 'uploads', 'games');
 //  MIDDLEWARE
 // ══════════════════════════════════════════════════════════
 app.use(cors());
+app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(__dirname));
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+
+// Lightweight cache for high-read endpoints.
+const apiCache = new Map();
+const CACHE_MS = 5000;
+
+function getCached(key) {
+  const hit = apiCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > CACHE_MS) {
+    apiCache.delete(key);
+    return null;
+  }
+  return hit.payload;
+}
+
+function setCached(key, payload) {
+  apiCache.set(key, { ts: Date.now(), payload });
+}
+
+function clearApiCache() {
+  apiCache.clear();
+}
 
 // ══════════════════════════════════════════════════════════
 //  DATABASE  —  schema + seed
@@ -171,13 +195,40 @@ const initialSchema = `
   try {
     await db.exec(initialSchema);
     try {
-      // Postgres-compatible upsert that does nothing if id=1 already exists
       await db.prepare("INSERT INTO users (id, name) VALUES (1, 'GameZone User') ON CONFLICT (id) DO NOTHING").run();
     } catch (e) {
       console.warn('[DB Init] Warning (ignored):', e.message);
     }
   } catch (e) {
     console.warn('[DB Init] Schema exec warning (ignored):', e.message);
+  }
+
+  // ── Comments jadvalini alohida kafolatlash ─────────────
+  // (ba'zan initialSchema bir blok sifatida ishlamaydi)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS comments (
+        id         SERIAL PRIMARY KEY,
+        game_id    INTEGER NOT NULL REFERENCES games_catalog(id) ON DELETE CASCADE,
+        user_name  TEXT    NOT NULL DEFAULT 'User',
+        text       TEXT    NOT NULL,
+        color      TEXT    NOT NULL DEFAULT '#FF3B57',
+        created_at BIGINT  DEFAULT (EXTRACT(EPOCH FROM now())::bigint)
+      )
+    `);
+    console.log('[DB] ✅ comments table ready');
+  } catch (e) {
+    console.error('[DB] ❌ comments table error:', e.message);
+  }
+
+  // Query performance indexes for heavy traffic.
+  try {
+    await pool.query('CREATE INDEX IF NOT EXISTS games_catalog_created_at_idx ON games_catalog (created_at DESC)');
+    await pool.query('CREATE INDEX IF NOT EXISTS games_catalog_featured_created_idx ON games_catalog (is_featured, created_at DESC)');
+    await pool.query('CREATE INDEX IF NOT EXISTS comments_game_created_idx ON comments (game_id, created_at DESC)');
+    console.log('[DB] ✅ performance indexes ready');
+  } catch (e) {
+    console.warn('[DB] ⚠️ index creation warning:', e.message);
   }
 })();
 
@@ -406,6 +457,7 @@ app.post('/api/admin/reset', headerAuth, async (req, res) => {
     // Purge orphaned image files AFTER the DB transaction succeeds
     let deletedFiles = 0;
     gameImages.forEach(p => { removeFile(p); deletedFiles++; });
+    clearApiCache();
 
     // Also sweep the games sub-directory for any leftover files
     if (fs.existsSync(GAME_IMAGES_DIR)) {
@@ -455,6 +507,7 @@ app.post('/api/admin/reset-all', headerAuth, async (req, res) => {
 
     let deletedFiles = 0;
     gameImages.forEach(p => { removeFile(p); deletedFiles++; });
+    clearApiCache();
 
     if (fs.existsSync(GAME_IMAGES_DIR)) {
       fs.readdirSync(GAME_IMAGES_DIR).forEach(f => {
@@ -503,6 +556,7 @@ app.delete('/api/games/:id', headerAuth, async (req, res) => {
 
     // Delete the row
     await db.prepare('DELETE FROM games_catalog WHERE id = ?').run(id);
+    clearApiCache();
 
     console.log(`[Delete] ✅ Game #${id} "${game.title}" removed.`);
     res.json({ ok: true, message: `Game "${game.title}" deleted successfully.`, id });
@@ -520,6 +574,7 @@ app.delete('/api/admin/games/:id', tokenAuth, async (req, res) => {
     if (!game) return res.status(404).json({ error: 'Game not found.' });
     removeFile(game.image_path);
     await db.prepare('DELETE FROM games_catalog WHERE id = ?').run(id);
+    clearApiCache();
     res.json({ ok: true, message: `"${game.title}" deleted.`, id });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -547,7 +602,10 @@ app.delete('/api/admin/games/:id', tokenAuth, async (req, res) => {
 /** GET /api/categories  —  public, used by frontend pill filters */
 app.get('/api/categories', async (_req, res) => {
   try {
+    const cached = getCached('categories');
+    if (cached) return res.json(cached);
     const rows = await db.prepare('SELECT id, name, created_at FROM categories ORDER BY name').all();
+    setCached('categories', rows);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -559,6 +617,7 @@ app.post('/api/categories', headerAuth, async (req, res) => {
   try {
     const r = await db.prepare('INSERT INTO categories (name) VALUES (?)').run(name);
     const created = await db.prepare('SELECT id, name FROM categories WHERE id = ?').get(r.lastInsertRowid);
+    clearApiCache();
     console.log(`[Category] ✅ Added: "${name}"`);
     res.status(201).json(created);
   } catch (e) {
@@ -575,6 +634,7 @@ app.delete('/api/categories/:id', headerAuth, async (req, res) => {
     const cat = await db.prepare('SELECT id, name FROM categories WHERE id = ?').get(id);
     if (!cat) return res.status(404).json({ error: `Category ${id} not found.` });
     await db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+    clearApiCache();
     console.log(`[Category] 🗑️  Deleted: "${cat.name}"`);
     res.json({ ok: true, message: `Category "${cat.name}" deleted.`, id });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -586,6 +646,7 @@ app.post('/api/admin/categories', tokenAuth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'Category name required.' });
   try {
     const r = await db.prepare('INSERT INTO categories (name) VALUES (?)').run(name);
+    clearApiCache();
     res.status(201).json({ id: r.lastInsertRowid, name });
   } catch (e) {
     const isDupe = e.message && e.message.includes('UNIQUE');
@@ -599,6 +660,7 @@ app.delete('/api/admin/categories/:id', tokenAuth, async (req, res) => {
     const cat = await db.prepare('SELECT name FROM categories WHERE id = ?').get(id);
     if (!cat) return res.status(404).json({ error: 'Category not found.' });
     await db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+    clearApiCache();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -608,6 +670,8 @@ app.delete('/api/admin/categories/:id', tokenAuth, async (req, res) => {
 // ─────────────────────────────────────────────────────────
 app.get('/api/games', async (req, res) => {
   try {
+    const cached = getCached('games');
+    if (cached) return res.json(cached);
     const rows = await db.prepare(`
       SELECT g.*, c.name AS category_name,
              COALESCE(cm.cnt, 0) AS comment_count
@@ -618,12 +682,16 @@ app.get('/api/games', async (req, res) => {
       ) cm ON cm.game_id = g.id
       ORDER  BY g.created_at DESC
     `).all();
-    res.json(rows.map(g => ({ ...g, image_url: toUrl(null, g.image_path) })));
+    const payload = rows.map(g => ({ ...g, image_url: toUrl(null, g.image_path) }));
+    setCached('games', payload);
+    res.json(payload);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/featured', async (req, res) => {
   try {
+    const cached = getCached('featured');
+    if (cached) return res.json(cached);
     const rows = await db.prepare(`
       SELECT g.*, c.name AS category_name
       FROM   games_catalog g
@@ -632,7 +700,9 @@ app.get('/api/featured', async (req, res) => {
       ORDER  BY g.created_at DESC
       LIMIT  10
     `).all();
-    res.json(rows.map(g => ({ ...g, image_url: toUrl(null, g.image_path) })));
+    const payload = rows.map(g => ({ ...g, image_url: toUrl(null, g.image_path) }));
+    setCached('featured', payload);
+    res.json(payload);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -663,6 +733,7 @@ app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), async (req, 
       VALUES (?, ?, ?, ?, ?)
     `).run(title, category_id, image_path, game_url, is_featured);
 
+    clearApiCache();
     res.status(201).json({ id: r.lastInsertRowid, title, image_url: toUrl(null, image_path), is_featured });
   } catch (e) {
     if (req.file) { try { fs.unlinkSync(req.file.path); } catch {} }
@@ -682,6 +753,7 @@ app.patch('/api/admin/games/:id/featured', tokenAuth, async (req, res) => {
     }
 
     await db.prepare('UPDATE games_catalog SET is_featured = ? WHERE id = ?').run(featured ? 1 : 0, id);
+    clearApiCache();
     res.json({ ok: true, id, is_featured: featured ? 1 : 0 });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -794,6 +866,7 @@ app.post('/api/games/:id/comments', async (req, res) => {
       [id]
     );
     const count = parseInt(countRes.rows[0]?.n || 0, 10);
+    clearApiCache();
 
     io.emit('new-comment', { game_id: id, comment, count });
     res.status(201).json({ comment, count });
@@ -825,6 +898,7 @@ app.post('/api/games/:id/like', async (req, res) => {
     if (!gameRes.rows.length) return res.status(404).json({ error: 'Game not found.' });
 
     const likes = gameRes.rows[0].likes;
+    clearApiCache();
     io.emit('like-updated', { game_id: id, likes });
     res.json({ ok: true, likes });
   } catch (e) {

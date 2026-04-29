@@ -458,7 +458,7 @@ function closeModal() {
 
 function renderModalComments(id) {
   const list = document.getElementById('gz-comments-list');
-  list.innerHTML = '<p class="gz-modal__empty">Yuklanmoqda…</p>';
+  list.innerHTML = '<p class="gz-modal__empty">Loading…</p>';
   const me = getCurrentUser();
 
   fetch(`/api/games/${id}/comments`)
@@ -466,14 +466,14 @@ function renderModalComments(id) {
     .then(comments => {
       list.innerHTML = '';
       if (!comments.length) {
-        list.innerHTML = `<p class="gz-modal__empty">Hali komment yo'q. Birinchi bo'l! 🎮</p>`;
+        list.innerHTML = `<p class="gz-modal__empty">No comments yet. Be the first! 🎮</p>`;
         return;
       }
       comments.forEach(c => _buildCommentEl(c, me, list, 'append'));
       list.scrollTop = list.scrollHeight;
     })
     .catch(() => {
-      list.innerHTML = `<p class="gz-modal__empty">Kommentlarni yuklashda xatolik ❌</p>`;
+      list.innerHTML = `<p class="gz-modal__empty">Failed to load comments ❌</p>`;
     });
 }
 
@@ -540,15 +540,16 @@ function _updateCommentCountUI(gameId, count) {
 function _buildCommentEl(c, me, container, pos = 'append') {
   const isMine = c.user_name === me;
   const el = document.createElement('div');
+
   el.className = 'gz-comment' + (isMine ? ' gz-comment--mine' : '') + ' gz-comment--new';
 
   const avatar = `<div class="gz-comment__avatar" style="background:${isMine ? '#FF3B57' : (c.color || '#6C63FF')}">${(c.user_name || 'U').charAt(0).toUpperCase()}</div>`;
-  const nameLabel = isMine ? 'Siz' : (c.user_name || 'Foydalanuvchi');
+  const nameLabel = isMine ? 'You' : (c.user_name || 'Unknown');
   const time = _relativeTime(c.created_at);
 
   el.innerHTML = isMine ? `
     <div class="gz-comment__body gz-comment__body--mine">
-      <p class="gz-comment__name">Sen</p>
+      <p class="gz-comment__name">You</p>
       <p class="gz-comment__text">${c.text}</p>
       <p class="gz-comment__time">${time}</p>
     </div>
@@ -801,6 +802,12 @@ function setActiveNav() {
 // ══════════════════════════════════════════════════════════
 function injectGamePlayer() {
   if (document.getElementById('gz-player-overlay')) return;
+  if (!document.getElementById('gz-player-inline-style')) {
+    const st = document.createElement('style');
+    st.id = 'gz-player-inline-style';
+    st.textContent = '@keyframes gz-spin{to{transform:rotate(360deg)}}';
+    document.head.appendChild(st);
+  }
   const el = document.createElement('div');
   el.id = 'gz-player-overlay';
   el.innerHTML = `
@@ -808,27 +815,21 @@ function injectGamePlayer() {
       <div class="gz-player__bar">
         <span class="gz-player__title" id="gz-player-title"></span>
         <div class="gz-player__actions">
-          <button class="gz-player__fs" id="gz-player-fs" title="To'liq ekran">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <button class="gz-player__fs" id="gz-player-fs" title="Fullscreen">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
               <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
             </svg>
           </button>
-          <button class="gz-player__close" id="gz-player-close" title="Yopish">✕</button>
+          <button class="gz-player__close" id="gz-player-close" title="Close">✕</button>
         </div>
       </div>
-
-      <!-- Iframe blok xabar (default yashirin) -->
-      <div class="gz-player__blocked" id="gz-player-blocked" style="display:none">
-        <div class="gz-player__blocked-icon">🚫</div>
-        <p class="gz-player__blocked-title">O'yin bu yerda ochilmaydi</p>
-        <p class="gz-player__blocked-desc">Bu sayt iframe ichida ko'rsatishni taqiqlagan.<br>Yangi tabda ochib o'ynashingiz mumkin.</p>
-        <button class="gz-player__blocked-btn" id="gz-player-newtab">
-          ↗ Yangi tabda ochish
-        </button>
+      <div id="gz-player-loading" style="position:absolute;inset:48px 0 0 0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:rgba(0,0,0,.55);color:#fff;z-index:2;">
+        <div style="width:26px;height:26px;border:3px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:gz-spin .7s linear infinite;"></div>
+        <p style="font-size:13px;opacity:.9;">Game loading...</p>
       </div>
-
+      <div id="gz-player-fallback" style="position:absolute;inset:48px 0 0 0;display:none;background:rgba(0,0,0,.7);z-index:3;"></div>
       <iframe id="gz-player-frame" src="" allowfullscreen
-        allow="fullscreen; autoplay; gamepad; pointer-lock; screen-wake-lock"></iframe>
+        allow="fullscreen; autoplay; gamepad; pointer-lock; screen-wake-lock; clipboard-read; clipboard-write"></iframe>
     </div>
   `;
   document.body.appendChild(el);
@@ -836,82 +837,43 @@ function injectGamePlayer() {
   document.getElementById('gz-player-close').addEventListener('click', closeGamePlayer);
   el.addEventListener('click', e => { if (e.target === el) closeGamePlayer(); });
 
-  // To'liq ekran tugmasi
   document.getElementById('gz-player-fs').addEventListener('click', () => {
     const frame = document.getElementById('gz-player-frame');
     if (frame.requestFullscreen)            frame.requestFullscreen();
     else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
   });
 
-  // ESC bilan yopish
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeGamePlayer();
   });
-
-  // Iframe yuklanganda X-Frame-Options tekshiramiz
-  // (blocked bo'lsa about:blank yoki xato keladi)
-  const frame = document.getElementById('gz-player-frame');
-  let _checkTimer = null;
-
-  frame.addEventListener('load', () => {
-    clearTimeout(_checkTimer);
-    // Agar src bo'sh bo'lsa — tekshirma
-    if (!frame.src || frame.src === window.location.href) return;
-    try {
-      // Agar cross-origin blok bo'lsa — contentDocument null yoki xato beradi
-      const doc = frame.contentDocument;
-      // doc null bo'lsa — BLOK (same-origin policy)
-      if (!doc || !doc.body) {
-        _showBlocked();
-      } else if (doc.body.innerHTML.trim() === '') {
-        _showBlocked();
-      }
-    } catch (e) {
-      // SecurityError — cross-origin, lekin yuklangan (OK)
-      // Hech narsa qilmaymiz
-    }
-  });
-
-  // 6 soniyadan keyin hali ham bo'sh bo'lsa — blok deb hisoblaymiz
-  frame._startCheck = (url) => {
-    clearTimeout(_checkTimer);
-    _checkTimer = setTimeout(() => {
-      try {
-        const doc = frame.contentDocument;
-        if (!doc || doc.body.innerHTML.trim() === '') _showBlocked();
-      } catch (_) { /* cross-origin OK */ }
-    }, 6000);
-  };
-
-  function _showBlocked() {
-    frame.style.display = 'none';
-    document.getElementById('gz-player-blocked').style.display = 'flex';
-    document.getElementById('gz-player-fs').style.display = 'none';
-  }
 }
 
 function openGamePlayer(url, title) {
   if (!url || url === '#') return;
   injectGamePlayer();
-  const frame   = document.getElementById('gz-player-frame');
-  const blocked = document.getElementById('gz-player-blocked');
-  const fsBtn   = document.getElementById('gz-player-fs');
+  const frame = document.getElementById('gz-player-frame');
+  const loading = document.getElementById('gz-player-loading');
+  const fallback = document.getElementById('gz-player-fallback');
+  if (loading) loading.style.display = 'flex';
+  if (fallback) fallback.style.display = 'none';
+  if (frame._openTimer) clearTimeout(frame._openTimer);
 
-  // Reset
-  frame.style.display   = '';
-  blocked.style.display = 'none';
-  fsBtn.style.display   = '';
+  frame.onload = () => {
+    if (loading) loading.style.display = 'none';
+    if (fallback) fallback.style.display = 'none';
+    if (frame._openTimer) clearTimeout(frame._openTimer);
+  };
+  frame.onerror = () => {
+    if (loading) loading.style.display = 'none';
+    if (fallback) fallback.style.display = 'flex';
+  };
+  frame._openTimer = setTimeout(() => {
+    if (loading) loading.style.display = 'none';
+    if (fallback) fallback.style.display = 'flex';
+  }, 3500);
 
   document.getElementById('gz-player-title').textContent = title || '';
   frame.src = url;
-  if (frame._startCheck) frame._startCheck(url);
-
-  // "Yangi tabda" tugmasi URL ni biladi
-  document.getElementById('gz-player-newtab').onclick = () => {
-    window.open(url, '_blank', 'noopener,noreferrer');
-    closeGamePlayer();
-  };
-
   document.getElementById('gz-player-overlay').classList.add('active');
   document.body.style.overflow = 'hidden';
 }
@@ -919,8 +881,14 @@ function openGamePlayer(url, title) {
 function closeGamePlayer() {
   const ov = document.getElementById('gz-player-overlay');
   if (!ov) return;
+  const frame = document.getElementById('gz-player-frame');
+  const loading = document.getElementById('gz-player-loading');
+  const fallback = document.getElementById('gz-player-fallback');
+  if (frame && frame._openTimer) clearTimeout(frame._openTimer);
+  if (loading) loading.style.display = 'none';
+  if (fallback) fallback.style.display = 'none';
   ov.classList.remove('active');
-  document.getElementById('gz-player-frame').src = '';
+  frame.src = '';
   document.body.style.overflow = '';
 }
 

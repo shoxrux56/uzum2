@@ -8,6 +8,7 @@
     "dev": "node --experimental-sqlite --watch server.js"
   },
   "dependencies": {
+    "compression": "^1.8.1",
     "cors": "*",
     "dotenv": "*",
     "express": "*",

@@ -769,7 +769,8 @@ html.dark .gz-toast {
 .gz-player__actions { display: flex; gap: 8px; align-items: center; }
 
 .gz-player__fs,
-.gz-player__close {
+.gz-player__close,
+.gz-player__newtab {
   background: rgba(255,255,255,.1);
   border: none; border-radius: 8px;
   color: #fff; cursor: pointer;
@@ -778,7 +779,9 @@ html.dark .gz-toast {
   font-size: 15px; font-weight: 700;
   transition: background .15s;
 }
-.gz-player__fs:hover   { background: rgba(255,255,255,.2); }
+.gz-player__newtab { font-size: 17px; }
+.gz-player__fs:hover,
+.gz-player__newtab:hover { background: rgba(255,255,255,.2); }
 .gz-player__close:hover { background: var(--accent); }
 
 #gz-player-frame {
