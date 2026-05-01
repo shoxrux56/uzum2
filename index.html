@@ -97,7 +97,9 @@
     const grid  = document.getElementById('gamesGrid');
     const games = GameStore.getSorted();   // ← API dan, hardcode emas
     grid.innerHTML = '';
-    games.forEach(g => grid.appendChild(buildCard(g)));
+    const frag = document.createDocumentFragment();
+    games.forEach(g => frag.appendChild(buildCard(g)));
+    grid.appendChild(frag);
     document.getElementById('gameCount').textContent =
       `${games.length} game${games.length !== 1 ? 's' : ''}`;
   }

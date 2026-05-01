@@ -268,9 +268,61 @@ function formatEngagementNumbers(n) {
 }
 const fmtLikes = formatEngagementNumbers;  // mavjud chaqiruvlar uchun alias
 
+function escapeHTML(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getCommentText(comment) {
+  const raw = comment?.text ?? comment?.comment ?? comment?.content ?? '';
+  const normalized = String(raw).trim();
+  return normalized || '...';
+}
+
 // ══════════════════════════════════════════════════════════
 //  Card rendering
 // ══════════════════════════════════════════════════════════
+let cardDelegationBound = false;
+
+function ensureCardEventDelegation() {
+  if (cardDelegationBound) return;
+  cardDelegationBound = true;
+
+  document.addEventListener('click', e => {
+    const actionBtn = e.target.closest('[data-action][data-id]');
+    if (actionBtn) {
+      const action = actionBtn.dataset.action;
+      const id = parseInt(actionBtn.dataset.id, 10);
+      if (!Number.isFinite(id)) return;
+
+      e.stopPropagation();
+      if (action === 'like') {
+        const card = actionBtn.closest('.gz-card');
+        toggleLike(id, card);
+        return;
+      }
+      if (action === 'comment') {
+        openModal(id);
+        return;
+      }
+    }
+
+    const cardEl = e.target.closest('.gz-card[data-id]');
+    if (!cardEl) return;
+    if (e.target.closest('[data-action]')) return;
+
+    const id = parseInt(cardEl.dataset.id, 10);
+    if (!Number.isFinite(id)) return;
+    const game = GameStore.getById(id);
+    const url = game?.game_url && game.game_url !== '#' ? game.game_url : null;
+    if (url) openGamePlayer(url, game.title);
+  });
+}
+
 function badgeHTML(badge) {
   if (!badge) return '';
   const map = { hot: '🔥 Hot', new: 'New', top: '★ Top' };
@@ -289,6 +341,8 @@ function heartSVG(filled) {
  * DB va mock ikkisini ham qabul qiladi.
  */
 function buildCard(game) {
+  ensureCardEventDelegation();
+
   const liked  = State.likedSet.has(game.id);
   const cCount = game.comment_count || 0;
 
@@ -302,7 +356,7 @@ function buildCard(game) {
     <div class="gz-card__img-wrap">
       <img class="gz-card__img" src="${game.img || PLACEHOLDER_IMG}"
            loading="lazy" decoding="async"
-           alt="${game.title}" loading="lazy"
+           alt="${game.title}"
            onerror="this.src='${PLACEHOLDER_IMG}'" />
       ${badgeHTML(game.badge)}
       ${game.rating ? `
@@ -333,23 +387,6 @@ function buildCard(game) {
       </div>
     </div>
   `;
-
-  div.querySelector('[data-action="like"]').addEventListener('click', e => {
-    e.stopPropagation();
-    toggleLike(game.id, div);
-  });
-
-  // Izoh tugmasi → modal ochadi
-  div.querySelector('[data-action="comment"]').addEventListener('click', e => {
-    e.stopPropagation();
-    openModal(game.id);
-  });
-
-  // Karta bosilsa → o'yin iframe'da ochiladi
-  div.addEventListener('click', () => {
-    const url = game.game_url && game.game_url !== '#' ? game.game_url : null;
-    if (url) openGamePlayer(url, game.title);
-  });
 
   return div;
 }
@@ -429,6 +466,36 @@ function _updateLikeUI(id, isLiked, count) {
 //  Modal / Comments — GameStore'dan o'qiydi
 // ══════════════════════════════════════════════════════════
 let modalGameId = null;
+let commentsPollTimer = null;
+let commentsTimeTimer = null;
+let latestCommentsReqToken = 0;
+
+function startCommentsAutoRefresh(gameId) {
+  if (commentsPollTimer) clearInterval(commentsPollTimer);
+  // Socket mavjud bo'lganda polling shart emas; fallback sifatida o'chirib qo'yamiz.
+  if (_socket) return;
+  commentsPollTimer = setInterval(() => {
+    if (modalGameId !== gameId) return;
+    if (document.visibilityState !== 'visible') return;
+    renderModalComments(gameId);
+  }, 15000);
+}
+
+function stopCommentsAutoRefresh() {
+  if (commentsPollTimer) clearInterval(commentsPollTimer);
+  commentsPollTimer = null;
+}
+
+function startCommentTimeRefresh() {
+  if (commentsTimeTimer) clearInterval(commentsTimeTimer);
+  refreshVisibleCommentTimes();
+  commentsTimeTimer = setInterval(refreshVisibleCommentTimes, 60000);
+}
+
+function stopCommentTimeRefresh() {
+  if (commentsTimeTimer) clearInterval(commentsTimeTimer);
+  commentsTimeTimer = null;
+}
 
 function openModal(id) {
   modalGameId = id;
@@ -440,10 +507,11 @@ function openModal(id) {
   const overlay = document.getElementById('gz-overlay');
   overlay.querySelector('.gz-modal__thumb').src      = game.img || PLACEHOLDER_IMG;
   overlay.querySelector('.gz-modal__info h3').textContent = game.title;
-  overlay.querySelector('.gz-modal__info p').textContent  =
-    `${game.genre}${game.game_url && game.game_url !== '#' ? ' · ' + game.game_url : ''}`;
+  overlay.querySelector('.gz-modal__info p').textContent  = game.genre;
 
   renderModalComments(id);
+  startCommentsAutoRefresh(id);
+  startCommentTimeRefresh();
   overlay.classList.add('open');
   document.body.style.overflow = 'hidden';
   setTimeout(() => overlay.querySelector('.gz-modal__input')?.focus(), 350);
@@ -454,9 +522,12 @@ function closeModal() {
   overlay.classList.remove('open');
   document.body.style.overflow = '';
   modalGameId = null;
+  stopCommentsAutoRefresh();
+  stopCommentTimeRefresh();
 }
 
 function renderModalComments(id) {
+  const reqToken = ++latestCommentsReqToken;
   const list = document.getElementById('gz-comments-list');
   list.innerHTML = '<p class="gz-modal__empty">Loading…</p>';
   const me = getCurrentUser();
@@ -464,15 +535,20 @@ function renderModalComments(id) {
   fetch(`/api/games/${id}/comments`)
     .then(r => r.json())
     .then(comments => {
+      if (reqToken !== latestCommentsReqToken || modalGameId !== id) return;
       list.innerHTML = '';
       if (!comments.length) {
         list.innerHTML = `<p class="gz-modal__empty">No comments yet. Be the first! 🎮</p>`;
         return;
       }
-      comments.forEach(c => _buildCommentEl(c, me, list, 'append'));
+      const frag = document.createDocumentFragment();
+      comments.forEach(c => _buildCommentEl(c, me, frag, 'append'));
+      list.appendChild(frag);
       list.scrollTop = list.scrollHeight;
+      refreshVisibleCommentTimes();
     })
     .catch(() => {
+      if (reqToken !== latestCommentsReqToken || modalGameId !== id) return;
       list.innerHTML = `<p class="gz-modal__empty">Failed to load comments ❌</p>`;
     });
 }
@@ -504,10 +580,11 @@ function submitComment() {
     .then(data => {
       if (data.comment) {
         input.value = '';
+        if (!String(data.comment.text ?? '').trim()) data.comment.text = text;
         // In-memory game ob'ektini ham yangilaymiz
         const g = GameStore.getById(modalGameId);
         if (g) g.comment_count = data.count;
-        if (modalGameId !== null) renderModalComments(modalGameId);
+        if (modalGameId !== null) _appendCommentToModal(data.comment);
         _updateCommentCountUI(modalGameId, data.count);
         showToast('💬 Comment added!');
       } else {
@@ -542,24 +619,29 @@ function _buildCommentEl(c, me, container, pos = 'append') {
   const el = document.createElement('div');
 
   el.className = 'gz-comment' + (isMine ? ' gz-comment--mine' : '') + ' gz-comment--new';
+  if (c.id !== undefined && c.id !== null) el.dataset.commentId = String(c.id);
 
   const avatar = `<div class="gz-comment__avatar" style="background:${isMine ? '#FF3B57' : (c.color || '#6C63FF')}">${(c.user_name || 'U').charAt(0).toUpperCase()}</div>`;
   const nameLabel = isMine ? 'You' : (c.user_name || 'Unknown');
-  const time = _relativeTime(c.created_at);
+  const safeText = escapeHTML(getCommentText(c));
+  const safeName = escapeHTML(nameLabel);
+  const ts = Number(c.created_at);
+  const time = _relativeTime(ts);
+  const tsAttr = Number.isFinite(ts) ? ` data-ts="${ts}"` : '';
 
   el.innerHTML = isMine ? `
     <div class="gz-comment__body gz-comment__body--mine">
       <p class="gz-comment__name">You</p>
-      <p class="gz-comment__text">${c.text}</p>
-      <p class="gz-comment__time">${time}</p>
+      <p class="gz-comment__text">${safeText}</p>
+      <p class="gz-comment__time"${tsAttr}>${time}</p>
     </div>
     ${avatar}
   ` : `
     ${avatar}
     <div class="gz-comment__body">
-      <p class="gz-comment__name">${nameLabel}</p>
-      <p class="gz-comment__text">${c.text}</p>
-      <p class="gz-comment__time">${time}</p>
+      <p class="gz-comment__name">${safeName}</p>
+      <p class="gz-comment__text">${safeText}</p>
+      <p class="gz-comment__time"${tsAttr}>${time}</p>
     </div>
   `;
 
@@ -572,11 +654,23 @@ function _buildCommentEl(c, me, container, pos = 'append') {
 function _appendCommentToModal(c) {
   const list = document.getElementById('gz-comments-list');
   if (!list) return;
+  if (c?.id !== undefined && list.querySelector(`.gz-comment[data-comment-id="${c.id}"]`)) return;
   const empty = list.querySelector('.gz-modal__empty');
   if (empty) empty.remove();
   const me = getCurrentUser();
-  _buildCommentEl(c, me, list, 'prepend');
-  list.scrollTop = 0;
+  _buildCommentEl(c, me, list, 'append');
+  refreshVisibleCommentTimes();
+  list.scrollTop = list.scrollHeight;
+}
+
+function refreshVisibleCommentTimes() {
+  const list = document.getElementById('gz-comments-list');
+  if (!list) return;
+  list.querySelectorAll('.gz-comment__time[data-ts]').forEach(el => {
+    const ts = Number(el.dataset.ts);
+    if (!Number.isFinite(ts)) return;
+    el.textContent = _relativeTime(ts);
+  });
 }
 
 // ══════════════════════════════════════════════════════════

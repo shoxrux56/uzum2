@@ -405,7 +405,10 @@
         <div class="panel">
           <div class="panel-head">
             <h3>All Categories</h3>
-            <span id="catCount" style="font-size:13px;color:var(--text-3);"></span>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <input id="catSearchInput" class="form-input" type="text" placeholder="Search category..." style="width:220px; padding:8px 10px;" />
+              <span id="catCount" style="font-size:13px;color:var(--text-3);"></span>
+            </div>
           </div>
           <div class="panel-body" style="padding:0;">
             <table class="adm-table">
@@ -479,7 +482,10 @@
         <div class="panel">
           <div class="panel-head">
             <h3>All Games</h3>
-            <span id="gameCount" style="font-size:13px;color:var(--text-3);"></span>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <input id="gameSearchInput" class="form-input" type="text" placeholder="Search game..." style="width:240px; padding:8px 10px;" />
+              <span id="gameCount" style="font-size:13px;color:var(--text-3);"></span>
+            </div>
           </div>
           <div class="panel-body" style="padding:0;">
             <table class="adm-table">
@@ -533,6 +539,7 @@ async function api(method, url, body, isForm = false) {
 
 // ── Toast ─────────────────────────────────────────────────
 let toastT;
+let dashboardLoaded = false;
 function toast(msg, type = '') {
   const el = document.getElementById('adminToast');
   el.textContent = msg; el.className = `show ${type}`;
@@ -558,6 +565,11 @@ document.querySelectorAll('.nav-item[data-sec]').forEach(btn => {
 // ── Logout ────────────────────────────────────────────────
 document.getElementById('logoutBtn').addEventListener('click', () => {
   clearToken();
+  dashboardLoaded = false;
+  categoriesLoaded = false;
+  gamesLoaded = false;
+  categories = [];
+  games = [];
   document.getElementById('adminApp').style.display      = 'none';
   document.getElementById('loginScreen').style.display   = 'flex';
 });
@@ -592,6 +604,7 @@ document.getElementById('loginPass').addEventListener('keydown', e => { if (e.ke
 //  DASHBOARD
 // ══════════════════════════════════════════════════════════
 async function loadDashboard() {
+  if (dashboardLoaded) return;
   try {
     const stats = await api('GET', '/api/admin/stats');
     document.getElementById('statGames').textContent = stats.games;
@@ -609,7 +622,7 @@ async function loadDashboard() {
     tbody.innerHTML = games.slice(0, 8).map(g => `
       <tr>
         <td>${g.image_url
-          ? `<img class="tbl-thumb" src="${g.image_url}" alt="" />`
+          ? `<img class="tbl-thumb" src="${g.image_url}" alt="" loading="lazy" decoding="async" />`
           : `<div class="tbl-thumb-placeholder">🎮</div>`}</td>
         <td><strong>${esc(g.title)}</strong></td>
         <td style="color:var(--text-2);">${esc(g.category_name || '—')}</td>
@@ -618,6 +631,7 @@ async function loadDashboard() {
           : '<span class="badge badge-normal">Normal</span>'}</td>
       </tr>
     `).join('');
+    dashboardLoaded = true;
   } catch(e) { console.error(e); }
 }
 
@@ -625,26 +639,38 @@ async function loadDashboard() {
 //  CATEGORIES
 // ══════════════════════════════════════════════════════════
 let categories = [];
+let categoriesLoaded = false;
+let categorySearchQuery = '';
 
 async function loadCategories() {
+  if (categoriesLoaded) return;
   try {
     categories = await api('GET', '/api/categories');
     renderCatTable();
     populateCatSelect();
+    categoriesLoaded = true;
   } catch(e) { toast('Failed to load categories: ' + e.message, 'err'); }
 }
 
 function renderCatTable() {
   const tbody = document.getElementById('catTableBody');
-  document.getElementById('catCount').textContent = `${categories.length} categories`;
-  if (!categories.length) {
+  const query = categorySearchQuery.trim().toLowerCase();
+  const filtered = query
+    ? categories.filter(c => String(c.name || '').toLowerCase().includes(query))
+    : categories;
+
+  document.getElementById('catCount').textContent = query
+    ? `${filtered.length} / ${categories.length} categories`
+    : `${categories.length} categories`;
+
+  if (!filtered.length) {
     tbody.innerHTML = `<tr><td colspan="3"><div class="adm-empty">
       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>
-      No categories yet. Add your first one above.
+      ${categories.length ? 'No category matched your search.' : 'No categories yet. Add your first one above.'}
     </div></td></tr>`;
     return;
   }
-  tbody.innerHTML = categories.map(c => `
+  tbody.innerHTML = filtered.map(c => `
     <tr>
       <td style="color:var(--text-3);">#${c.id}</td>
       <td><strong>${esc(c.name)}</strong></td>
@@ -677,6 +703,8 @@ document.getElementById('addCatBtn').addEventListener('click', async () => {
   try {
     const cat = await api('POST', '/api/admin/categories', { name });
     categories.push(cat);
+    categoriesLoaded = true;
+    dashboardLoaded = false;
     renderCatTable();
     populateCatSelect();
     input.value = '';
@@ -694,6 +722,8 @@ async function deleteCategory(id, name) {
   try {
     await api('DELETE', `/api/admin/categories/${id}`);
     categories = categories.filter(c => c.id !== id);
+    categoriesLoaded = true;
+    dashboardLoaded = false;
     renderCatTable();
     populateCatSelect();
     toast(`🗑️ "${name}" deleted.`, 'ok');
@@ -705,28 +735,45 @@ async function deleteCategory(id, name) {
 //  GAMES
 // ══════════════════════════════════════════════════════════
 let games = [];
+let gamesLoaded = false;
+let gameSearchQuery = '';
 
 async function loadGames() {
+  if (gamesLoaded) return;
   try {
     games = await api('GET', '/api/games');
     renderGamesTable();
+    gamesLoaded = true;
   } catch(e) { toast('Failed to load games: ' + e.message, 'err'); }
 }
 
 function renderGamesTable() {
   const tbody = document.getElementById('gameTableBody');
-  document.getElementById('gameCount').textContent = `${games.length} games`;
-  if (!games.length) {
+  const query = gameSearchQuery.trim().toLowerCase();
+  const filtered = query
+    ? games.filter(g => {
+        const title = String(g.title || '').toLowerCase();
+        const cat = String(g.category_name || '').toLowerCase();
+        const url = String(g.game_url || '').toLowerCase();
+        return title.includes(query) || cat.includes(query) || url.includes(query);
+      })
+    : games;
+
+  document.getElementById('gameCount').textContent = query
+    ? `${filtered.length} / ${games.length} games`
+    : `${games.length} games`;
+
+  if (!filtered.length) {
     tbody.innerHTML = `<tr><td colspan="6"><div class="adm-empty">
       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-      No games yet. Add your first game using the form above.
+      ${games.length ? 'No game matched your search.' : 'No games yet. Add your first game using the form above.'}
     </div></td></tr>`;
     return;
   }
-  tbody.innerHTML = games.map(g => `
+  tbody.innerHTML = filtered.map(g => `
     <tr>
       <td>${g.image_url
-        ? `<img class="tbl-thumb" src="${g.image_url}" alt="" />`
+        ? `<img class="tbl-thumb" src="${g.image_url}" alt="" loading="lazy" decoding="async" />`
         : `<div class="tbl-thumb-placeholder">🎮</div>`}</td>
       <td><strong>${esc(g.title)}</strong></td>
       <td style="color:var(--text-2); font-size:12px;">${esc(g.category_name || '—')}</td>
@@ -756,6 +803,32 @@ document.getElementById('gameImg').addEventListener('change', function() {
     this.files[0] ? this.files[0].name : 'Choose image (JPG, PNG, WEBP)';
 });
 
+function debounce(fn, wait = 180) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), wait);
+  };
+}
+
+const onCategorySearch = debounce((value) => {
+  categorySearchQuery = value || '';
+  renderCatTable();
+});
+
+const onGameSearch = debounce((value) => {
+  gameSearchQuery = value || '';
+  renderGamesTable();
+});
+
+document.getElementById('catSearchInput').addEventListener('input', (e) => {
+  onCategorySearch(e.target.value);
+});
+
+document.getElementById('gameSearchInput').addEventListener('input', (e) => {
+  onGameSearch(e.target.value);
+});
+
 document.getElementById('addGameBtn').addEventListener('click', async () => {
   const title      = document.getElementById('gameTitle').value.trim();
   const category_id = document.getElementById('gameCat').value;
@@ -782,6 +855,8 @@ document.getElementById('addGameBtn').addEventListener('click', async () => {
     const created = await api('POST', '/api/admin/games', fd, true);
     games.unshift({ ...created, category_name: categories.find(c=>c.id==category_id)?.name||null, image_path: null });
     // Reload to get image_url
+    gamesLoaded = false;
+    dashboardLoaded = false;
     await loadGames();
     await loadDashboard();
 
@@ -811,6 +886,7 @@ async function toggleFeatured(id, checkbox) {
     await api('PATCH', `/api/admin/games/${id}/featured`, { featured });
     const g = games.find(x => x.id === id);
     if (g) g.is_featured = featured ? 1 : 0;
+    dashboardLoaded = false;
     await loadDashboard();
     toast(featured ? '⭐ Game featured!' : '✓ Removed from featured.', featured ? 'ok' : '');
     SyncBus.emit();
@@ -826,6 +902,8 @@ async function deleteGame(id, title) {
     await api('DELETE', `/api/admin/games/${id}`);
     games = games.filter(g => g.id !== id);
     renderGamesTable();
+    gamesLoaded = true;
+    dashboardLoaded = false;
     await loadDashboard();
     toast(`🗑️ "${title}" deleted.`, 'ok');
     SyncBus.emit();   // barcha tablar yangilanadi
