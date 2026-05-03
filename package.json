@@ -8,10 +8,12 @@
     "dev": "node --experimental-sqlite --watch server.js"
   },
   "dependencies": {
+    "axios": "^1.16.0",
     "compression": "^1.8.1",
     "cors": "*",
     "dotenv": "*",
     "express": "*",
+    "form-data": "^4.0.5",
     "multer": "*",
     "pg": "^8.20.0",
     "socket.io": "*"

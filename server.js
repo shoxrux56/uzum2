@@ -14,6 +14,8 @@ const { Server: SocketServer } = require('socket.io');
 const multer   = require('multer');
 const path     = require('path');
 const fs       = require('fs');
+const axios    = require('axios');
+const FormData = require('form-data');
 const cors     = require('cors');
 const compression = require('compression');
 const crypto   = require('crypto');
@@ -31,6 +33,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const TOKEN_SECRET   = process.env.TOKEN_SECRET || crypto.randomBytes(32).toString('hex');
 const TOKEN_TTL_MS   = 24 * 60 * 60 * 1000;   // 24 hours
+const BOT_TOKEN      = process.env.BOT_TOKEN;
+const PHOTO_GROUP_ID = process.env.PHOTO_GROUP_ID;
 
 if (!ADMIN_PASSWORD) {
   console.error('\n❌  ADMIN_PASSWORD is not set in .env — server cannot start.\n');
@@ -267,15 +271,27 @@ const gameUpload   = makeUpload(GAME_IMAGES_DIR);
 //  HELPERS
 // ══════════════════════════════════════════════════════════
 
-/** Convert a relative DB path → relative public URL (works for all users, not just localhost) */
+function parseLegacyTelegramPath(value) {
+  if (!value || typeof value !== 'string') return null;
+  const m = value.match(/^https?:\/\/api\.telegram\.org\/file\/bot[^/]+\/(.+)$/i);
+  if (!m?.[1]) return null;
+  return decodeURIComponent(m[1]);
+}
+
+/** Convert a DB image reference → safe public URL (never exposes BOT_TOKEN). */
 const toUrl = (_req, p) => {
   if (!p) return null;
-  try {
-    const abs = path.join(__dirname, p);
-    if (!fs.existsSync(abs)) return null;
-  } catch (e) {
-    return null;
+  if (p.startsWith('tgid:')) {
+    return `/media/telegram/${encodeURIComponent(p.slice(5))}`;
   }
+  if (p.startsWith('tgpath:')) {
+    return `/media/telegram-file?path=${encodeURIComponent(p.slice(7))}`;
+  }
+  const legacyPath = parseLegacyTelegramPath(p);
+  if (legacyPath) {
+    return `/media/telegram-file?path=${encodeURIComponent(legacyPath)}`;
+  }
+  if (/^https?:\/\//i.test(p)) return p;
   // Relative URL — har qanday domendan ishlaydi
   return '/' + p.replace(/\\/g, '/');
 };
@@ -283,12 +299,69 @@ const toUrl = (_req, p) => {
 /** Safely delete a file from disk without throwing */
 function removeFile(relativePath) {
   if (!relativePath) return;
+  if (
+    String(relativePath).startsWith('tgid:') ||
+    String(relativePath).startsWith('tgpath:') ||
+    parseLegacyTelegramPath(String(relativePath))
+  ) return;
+  if (/^https?:\/\//i.test(relativePath)) return;
   try {
     const abs = path.join(__dirname, relativePath);
     if (fs.existsSync(abs)) fs.unlinkSync(abs);
   } catch (e) {
     console.warn(`[removeFile] Could not delete "${relativePath}":`, e.message);
   }
+}
+
+async function uploadImageToTelegram(filePath, caption = 'GameZone image') {
+  if (!BOT_TOKEN || !PHOTO_GROUP_ID) {
+    throw new Error('BOT_TOKEN yoki PHOTO_GROUP_ID .env da topilmadi.');
+  }
+
+  const form = new FormData();
+  form.append('chat_id', PHOTO_GROUP_ID);
+  form.append('photo', fs.createReadStream(filePath));
+  form.append('caption', caption.slice(0, 200));
+
+  const sendResp = await axios.post(
+    `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`,
+    form,
+    { headers: form.getHeaders(), timeout: 20000 }
+  );
+
+  if (!sendResp.data?.ok) {
+    throw new Error(sendResp.data?.description || 'Telegram sendPhoto xatosi');
+  }
+
+  const photos = sendResp.data?.result?.photo || [];
+  const bestPhoto = photos[photos.length - 1];
+  const fileId = bestPhoto?.file_id;
+  if (!fileId) throw new Error('Telegram file_id qaytmadi.');
+
+  // Store file_id only. Public URL is served via internal proxy route,
+  // so BOT_TOKEN never reaches browser/network payloads.
+  return `tgid:${fileId}`;
+}
+
+async function streamTelegramByFileId(fileId, res) {
+  const fileResp = await axios.get(
+    `https://api.telegram.org/bot${BOT_TOKEN}/getFile`,
+    { params: { file_id: fileId }, timeout: 15000 }
+  );
+  if (!fileResp.data?.ok || !fileResp.data?.result?.file_path) {
+    throw new Error(fileResp.data?.description || 'Telegram file_path olinmadi.');
+  }
+  return streamTelegramByPath(fileResp.data.result.file_path, res);
+}
+
+async function streamTelegramByPath(filePath, res) {
+  const tgResp = await axios.get(
+    `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`,
+    { responseType: 'stream', timeout: 20000 }
+  );
+  if (tgResp.headers['content-type']) res.setHeader('Content-Type', tgResp.headers['content-type']);
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  tgResp.data.pipe(res);
 }
 
 // ══════════════════════════════════════════════════════════
@@ -419,6 +492,31 @@ app.post('/admin/login', (req, res) => {
 });
 
 app.get('/admin/verify', tokenAuth, (_req, res) => res.json({ ok: true }));
+
+// ─────────────────────────────────────────────────────────
+//  MEDIA PROXY — serves Telegram images without exposing BOT_TOKEN
+// ─────────────────────────────────────────────────────────
+app.get('/media/telegram/:fileId', async (req, res) => {
+  try {
+    const fileId = decodeURIComponent(req.params.fileId || '').trim();
+    if (!fileId) return res.status(400).json({ error: 'fileId is required.' });
+    await streamTelegramByFileId(fileId, res);
+  } catch (e) {
+    console.error('[media/telegram]', e.message);
+    if (!res.headersSent) res.status(404).json({ error: 'Image not found.' });
+  }
+});
+
+app.get('/media/telegram-file', async (req, res) => {
+  try {
+    const filePath = decodeURIComponent(String(req.query.path || '')).trim();
+    if (!filePath) return res.status(400).json({ error: 'path is required.' });
+    await streamTelegramByPath(filePath, res);
+  } catch (e) {
+    console.error('[media/telegram-file]', e.message);
+    if (!res.headersSent) res.status(404).json({ error: 'Image not found.' });
+  }
+});
 
 // ─────────────────────────────────────────────────────────
 //  TASK 1 — SECURE DATABASE RESET
@@ -727,7 +825,12 @@ app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), async (req, 
       }
     }
 
-    const image_path = req.file ? `uploads/games/${req.file.filename}` : null;
+    let image_path = null;
+    if (req.file) {
+      image_path = await uploadImageToTelegram(req.file.path, `Game cover: ${title}`);
+      fs.unlinkSync(req.file.path);
+    }
+
     const r = await db.prepare(`
       INSERT INTO games_catalog (title, category_id, image_path, game_url, is_featured)
       VALUES (?, ?, ?, ?, ?)
@@ -794,7 +897,8 @@ app.post('/api/profile', avatarUpload.single('image'), async (req, res) => {
     let imagePath = cur?.profile_image_path;
 
     if (req.file) {
-      imagePath = `uploads/${req.file.filename}`;
+      imagePath = await uploadImageToTelegram(req.file.path, `Avatar: ${name}`);
+      fs.unlinkSync(req.file.path);
       removeFile(cur?.profile_image_path);
     }
 
