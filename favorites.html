@@ -6,6 +6,7 @@
   <title>GameZone — Favourites</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@hotwired/turbo@8.0.10/dist/turbo.es2017-umd.js"></script>
   <style>
     .fav-count-badge {
       display: inline-flex; align-items: center; justify-content: center;
@@ -109,10 +110,12 @@
     renderFavorites();
   });
 
-  document.addEventListener('DOMContentLoaded', async () => {
+  async function initFavoritesPage() {
     await fetchData();
     renderFavorites();
-  });
+  }
+  document.addEventListener('DOMContentLoaded', initFavoritesPage, { once: true });
+  document.addEventListener('turbo:load', initFavoritesPage);
   </script>
 </body>
 </html>

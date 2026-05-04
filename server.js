@@ -20,12 +20,13 @@ const cors     = require('cors');
 const compression = require('compression');
 const crypto   = require('crypto');
 const { Pool } = require('pg');
+let sharp = null;
+try { sharp = require('sharp'); } catch {}
 
 const app    = express();
 const server = http.createServer(app);
 const io     = new SocketServer(server);
 const PORT   = process.env.PORT || 3000;
-app.use(express.static(path.join(__dirname, 'public')));
 // ══════════════════════════════════════════════════════════
 //  SECURITY CONFIG
 //  All secrets come from .env — never hard-coded below.
@@ -58,8 +59,15 @@ app.use(cors());
 app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(UPLOADS_DIR));
-app.use(express.static(__dirname));
+app.use((req, res, next) => {
+  if (req.path.endsWith('.html')) {
+    res.setHeader('Cache-Control', 'no-cache');
+  }
+  next();
+});
+app.use('/uploads', express.static(UPLOADS_DIR, { maxAge: '30d', immutable: true }));
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '7d', immutable: true }));
+app.use(express.static(__dirname, { maxAge: '1d' }));
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 
 // Lightweight cache for high-read endpoints.
@@ -229,6 +237,8 @@ const initialSchema = `
   try {
     await pool.query('CREATE INDEX IF NOT EXISTS games_catalog_created_at_idx ON games_catalog (created_at DESC)');
     await pool.query('CREATE INDEX IF NOT EXISTS games_catalog_featured_created_idx ON games_catalog (is_featured, created_at DESC)');
+    await pool.query('CREATE INDEX IF NOT EXISTS games_catalog_likes_idx ON games_catalog (likes DESC)');
+    await pool.query('CREATE INDEX IF NOT EXISTS games_catalog_category_created_idx ON games_catalog (category_id, created_at DESC)');
     await pool.query('CREATE INDEX IF NOT EXISTS comments_game_created_idx ON comments (game_id, created_at DESC)');
     console.log('[DB] ✅ performance indexes ready');
   } catch (e) {
@@ -341,6 +351,21 @@ async function uploadImageToTelegram(filePath, caption = 'GameZone image') {
   // Store file_id only. Public URL is served via internal proxy route,
   // so BOT_TOKEN never reaches browser/network payloads.
   return `tgid:${fileId}`;
+}
+
+async function convertImageToWebp(filePath) {
+  if (!sharp || !filePath) return filePath;
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.webp') return filePath;
+
+  const webpPath = filePath.replace(/\.[^.]+$/, '.webp');
+  try {
+    await sharp(filePath).webp({ quality: 78, effort: 4 }).toFile(webpPath);
+    try { fs.unlinkSync(filePath); } catch {}
+    return webpPath;
+  } catch {
+    return filePath;
+  }
 }
 
 async function streamTelegramByFileId(fileId, res) {
@@ -827,8 +852,9 @@ app.post('/api/admin/games', tokenAuth, gameUpload.single('image'), async (req, 
 
     let image_path = null;
     if (req.file) {
-      image_path = await uploadImageToTelegram(req.file.path, `Game cover: ${title}`);
-      fs.unlinkSync(req.file.path);
+      const optimizedPath = await convertImageToWebp(req.file.path);
+      image_path = await uploadImageToTelegram(optimizedPath, `Game cover: ${title}`);
+      try { fs.unlinkSync(optimizedPath); } catch {}
     }
 
     const r = await db.prepare(`

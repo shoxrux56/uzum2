@@ -6,6 +6,7 @@
   <title>GameZone — Library</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@hotwired/turbo@8.0.10/dist/turbo.es2017-umd.js"></script>
   <link rel="preload" href="app.js" as="script">
   <style>body{opacity:0;animation:gz-fadein .18s ease forwards}@keyframes gz-fadein{to{opacity:1}}</style>
 </head>
@@ -323,7 +324,7 @@
   });
 
   // ─── DOMContentLoaded ────────────────────────────────────
-  document.addEventListener('DOMContentLoaded', () => {
+  function initLibraryPage() {
     loadAll();
 
     // Qidiruv
@@ -351,7 +352,9 @@
       activeCategory = pill.dataset.cat;
       renderLibrary();
     });
-  });
+  }
+  document.addEventListener('DOMContentLoaded', initLibraryPage, { once: true });
+  document.addEventListener('turbo:load', initLibraryPage);
   </script>
 </body>
 </html>

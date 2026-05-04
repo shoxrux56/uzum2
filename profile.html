@@ -6,6 +6,7 @@
   <title>GameZone — Profile</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@hotwired/turbo@8.0.10/dist/turbo.es2017-umd.js"></script>
   <style>
     .edit-panel{max-height:0;overflow:hidden;transition:max-height .38s cubic-bezier(.4,0,.2,1),opacity .3s ease;opacity:0}
     .edit-panel.open{max-height:560px;opacity:1}
@@ -336,7 +337,7 @@
       }
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    function initProfilePage() {
       loadProfile();   // GET — faqat o'qish, hech narsa yozilmaydi
 
 
@@ -364,7 +365,9 @@
       });
 
       // Language selector removed from HTML; language is handled globally.
-    });
+    }
+    document.addEventListener('DOMContentLoaded', initProfilePage, { once: true });
+    document.addEventListener('turbo:load', initProfilePage);
   </script>
 </body>
 </html>

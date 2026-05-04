@@ -96,6 +96,7 @@ function normalizeGame(g) {
     rating:        g.rating || null,
     comments:      g.comments || [],
     comment_count: parseInt(g.comment_count || 0, 10),
+    orientation:   String(g.orientation || '').toLowerCase(),
   };
 }
 
@@ -287,10 +288,27 @@ function getCommentText(comment) {
 //  Card rendering
 // ══════════════════════════════════════════════════════════
 let cardDelegationBound = false;
+const PRELOADED_GAME_URLS = new Set();
+let preloadFrameEl = null;
+let runtimeOptimizationsBound = false;
+let socketEventsBound = false;
 
 function ensureCardEventDelegation() {
   if (cardDelegationBound) return;
   cardDelegationBound = true;
+
+  const primeFromTarget = (target) => {
+    const cardEl = target.closest('.gz-card[data-id]');
+    if (!cardEl) return;
+    const id = parseInt(cardEl.dataset.id, 10);
+    if (!Number.isFinite(id)) return;
+    const game = GameStore.getById(id);
+    const url = game?.game_url && game.game_url !== '#' ? game.game_url : null;
+    if (url) preloadGameInBackground(url);
+  };
+
+  document.addEventListener('pointerenter', e => primeFromTarget(e.target), true);
+  document.addEventListener('touchstart', e => primeFromTarget(e.target), { passive: true, capture: true });
 
   document.addEventListener('click', e => {
     const actionBtn = e.target.closest('[data-action][data-id]');
@@ -319,7 +337,7 @@ function ensureCardEventDelegation() {
     if (!Number.isFinite(id)) return;
     const game = GameStore.getById(id);
     const url = game?.game_url && game.game_url !== '#' ? game.game_url : null;
-    if (url) openGamePlayer(url, game.title);
+    if (url) openGamePlayer(url, game.title, game.orientation);
   });
 }
 
@@ -754,7 +772,7 @@ const Carousel = {
         <div class="gz-carousel__info">
           <span class="gz-carousel__tag">⚡ Muharrir Tanlovi</span>
           <h3 class="gz-carousel__title">${g.title}</h3>
-          <button class="gz-carousel__play" onclick="openGamePlayer('${g.game_url}','${g.title.replace(/'/g,"\\'")}')">▶ Hozir o'yna</button>
+          <button class="gz-carousel__play" data-play-url="${g.game_url}" onclick="openGamePlayer('${g.game_url}','${g.title.replace(/'/g,"\\'")}','${String(g.orientation || '').replace(/'/g,"\\'")}')">▶ Hozir o'yna</button>
         </div>`;
       track.appendChild(slide);
       const dot = document.createElement('button');
@@ -891,99 +909,113 @@ function setActiveNav() {
   });
 }
 
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+function bindRuntimeOptimizations() {
+  if (runtimeOptimizationsBound) return;
+  runtimeOptimizationsBound = true;
+
+  const primePlayButton = (target) => {
+    const btn = target.closest('.gz-carousel__play,[data-play-url]');
+    if (!btn) return;
+    const dsUrl = btn.getAttribute('data-play-url');
+    const onclickUrl = btn.getAttribute('onclick')?.match(/openGamePlayer\('([^']+)'/)?.[1] || null;
+    const url = dsUrl || onclickUrl;
+    if (!url || url === '#') return;
+    preloadGameInBackground(url);
+  };
+
+  document.addEventListener('pointerenter', e => primePlayButton(e.target), true);
+  document.addEventListener('touchstart', e => primePlayButton(e.target), { passive: true, capture: true });
+  document.addEventListener('mousedown', e => primePlayButton(e.target), true);
+}
+
+function normalizeOrientation(value) {
+  return String(value || '').toLowerCase().includes('portrait') ? 'portrait' : 'landscape';
+}
+
+function preloadGameInBackground(url) {
+  if (!url || PRELOADED_GAME_URLS.has(url)) return;
+  PRELOADED_GAME_URLS.add(url);
+
+  if (!preloadFrameEl) {
+    preloadFrameEl = document.createElement('iframe');
+    preloadFrameEl.setAttribute('aria-hidden', 'true');
+    preloadFrameEl.tabIndex = -1;
+    preloadFrameEl.style.position = 'fixed';
+    preloadFrameEl.style.width = '1px';
+    preloadFrameEl.style.height = '1px';
+    preloadFrameEl.style.opacity = '0';
+    preloadFrameEl.style.pointerEvents = 'none';
+    preloadFrameEl.style.left = '-9999px';
+    preloadFrameEl.style.top = '-9999px';
+    preloadFrameEl.style.border = '0';
+    preloadFrameEl.allow = 'orientation-lock; fullscreen';
+    document.body.appendChild(preloadFrameEl);
+  }
+
+  preloadFrameEl.src = url;
+}
+
 // ══════════════════════════════════════════════════════════
 //  Game Player  —  o'yinni sayt ichida iframe'da ochadi
 // ══════════════════════════════════════════════════════════
 function injectGamePlayer() {
   if (document.getElementById('gz-player-overlay')) return;
-  if (!document.getElementById('gz-player-inline-style')) {
-    const st = document.createElement('style');
-    st.id = 'gz-player-inline-style';
-    st.textContent = '@keyframes gz-spin{to{transform:rotate(360deg)}}';
-    document.head.appendChild(st);
-  }
   const el = document.createElement('div');
   el.id = 'gz-player-overlay';
   el.innerHTML = `
     <div class="gz-player">
-      <div class="gz-player__bar">
-        <span class="gz-player__title" id="gz-player-title"></span>
-        <div class="gz-player__actions">
-          <button class="gz-player__fs" id="gz-player-fs" title="Fullscreen">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
-            </svg>
-          </button>
-          <button class="gz-player__close" id="gz-player-close" title="Close">✕</button>
-        </div>
-      </div>
-      <div id="gz-player-loading" style="position:absolute;inset:48px 0 0 0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:rgba(0,0,0,.55);color:#fff;z-index:2;">
-        <div style="width:26px;height:26px;border:3px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:gz-spin .7s linear infinite;"></div>
-        <p style="font-size:13px;opacity:.9;">Game loading...</p>
-      </div>
-      <div id="gz-player-fallback" style="position:absolute;inset:48px 0 0 0;display:none;background:rgba(0,0,0,.7);z-index:3;"></div>
       <iframe id="gz-player-frame" src="" allowfullscreen
-        allow="fullscreen; autoplay; gamepad; pointer-lock; screen-wake-lock; clipboard-read; clipboard-write"></iframe>
+        allow="orientation-lock; fullscreen"></iframe>
     </div>
   `;
   document.body.appendChild(el);
 
-  document.getElementById('gz-player-close').addEventListener('click', closeGamePlayer);
   el.addEventListener('click', e => { if (e.target === el) closeGamePlayer(); });
-
-  document.getElementById('gz-player-fs').addEventListener('click', () => {
-    const frame = document.getElementById('gz-player-frame');
-    if (frame.requestFullscreen)            frame.requestFullscreen();
-    else if (frame.webkitRequestFullscreen) frame.webkitRequestFullscreen();
-  });
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeGamePlayer();
   });
 }
 
-function openGamePlayer(url, title) {
+function openGamePlayer(url, _title, orientation) {
   if (!url || url === '#') return;
   injectGamePlayer();
+  const mode = normalizeOrientation(orientation);
+  const overlay = document.getElementById('gz-player-overlay');
   const frame = document.getElementById('gz-player-frame');
-  const loading = document.getElementById('gz-player-loading');
-  const fallback = document.getElementById('gz-player-fallback');
-  if (loading) loading.style.display = 'flex';
-  if (fallback) fallback.style.display = 'none';
-  if (frame._openTimer) clearTimeout(frame._openTimer);
+  preloadGameInBackground(url);
 
-  frame.onload = () => {
-    if (loading) loading.style.display = 'none';
-    if (fallback) fallback.style.display = 'none';
-    if (frame._openTimer) clearTimeout(frame._openTimer);
-  };
-  frame.onerror = () => {
-    if (loading) loading.style.display = 'none';
-    if (fallback) fallback.style.display = 'flex';
-  };
-  frame._openTimer = setTimeout(() => {
-    if (loading) loading.style.display = 'none';
-    if (fallback) fallback.style.display = 'flex';
-  }, 3500);
+  if (overlay) {
+    overlay.classList.remove('gz-orientation-landscape', 'gz-orientation-portrait');
+    overlay.classList.add(mode === 'portrait' ? 'gz-orientation-portrait' : 'gz-orientation-landscape');
+  }
 
-  document.getElementById('gz-player-title').textContent = title || '';
+  frame.onload = null;
+  frame.onerror = null;
   frame.src = url;
-  document.getElementById('gz-player-overlay').classList.add('active');
-  document.body.style.overflow = 'hidden';
+  if (overlay) overlay.classList.add('active');
+  document.documentElement.classList.add('gz-player-open');
+  document.body.classList.add('gz-player-open');
+
+  const lockMode = mode === 'portrait' ? 'portrait' : 'landscape';
+  if (screen.orientation?.lock) {
+    screen.orientation.lock(lockMode).catch(() => {});
+  }
 }
 
 function closeGamePlayer() {
   const ov = document.getElementById('gz-player-overlay');
   if (!ov) return;
   const frame = document.getElementById('gz-player-frame');
-  const loading = document.getElementById('gz-player-loading');
-  const fallback = document.getElementById('gz-player-fallback');
-  if (frame && frame._openTimer) clearTimeout(frame._openTimer);
-  if (loading) loading.style.display = 'none';
-  if (fallback) fallback.style.display = 'none';
   ov.classList.remove('active');
   frame.src = '';
-  document.body.style.overflow = '';
+  document.documentElement.classList.remove('gz-player-open');
+  document.body.classList.remove('gz-player-open');
 }
 
 function injectModal() {
@@ -1029,15 +1061,18 @@ function injectToast() {
   document.body.appendChild(t);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+function bootstrapSharedUI() {
   injectModal();
   injectToast();
   setActiveNav();
+  bindRuntimeOptimizations();
+  registerServiceWorker();
   document.querySelectorAll('[data-action="bell"]').forEach(b =>
     b.addEventListener('click', onBellClick));
 
   // ── Socket.io — real-time yangilanishlar ──────────────
-  if (_socket) {
+  if (_socket && !socketEventsBound) {
+    socketEventsBound = true;
 
     // ❤️ Kimdir layk bosdi → BARCHA ekranlarda son yangilanadi
     _socket.on('like-updated', ({ game_id, likes }) => {
@@ -1061,7 +1096,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     console.log('[WS] ✅ Socket.io ulandi — real-time tayyor');
-  } else {
+  } else if (!_socket) {
     console.warn('[WS] ⚠️ Socket.io topilmadi');
   }
-});
+}
+
+document.addEventListener('DOMContentLoaded', bootstrapSharedUI);
+document.addEventListener('turbo:load', bootstrapSharedUI);
